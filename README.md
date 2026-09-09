@@ -80,22 +80,15 @@ An unavailable measurement has `status: "unavailable"`, `value: null`, `observed
 
 ## Docker package
 
-On a Linux Docker host, the helper automatically binds to the host address used for the default route (for example `192.168.1.11`) instead of requiring an inline environment variable:
+Follow [the deployment runbook](docs/deployment.md) to configure the ignored `.env`, verify filesystem identities, and publish on explicit LAN and Tailscale IPv4 addresses. There is no automatic address selection or wildcard fallback.
 
 ```sh
-npm run docker:up
-# Open http://<host-LAN-address>:3000
+npm run docker:check      # Validate local addresses, mounts, and port availability
+npm run docker:up        # Build, recheck, and update only the Dashboard
 npm run docker:logs
-npm run docker:down
 ```
 
-The helper falls back to `127.0.0.1` when the `ip` command cannot determine an address. Set `VOIDSTATION_BIND_ADDRESS` explicitly when you need a different private interface:
-
-```sh
-VOIDSTATION_BIND_ADDRESS=100.118.62.125 npm run docker:up
-```
-
-It runs `docker compose up --build -d`, so rebuilding after code changes remains automatic.
+Both publications target container port 3000. Set `VOIDSTATION_LAN_PORT` and `VOIDSTATION_TAILSCALE_PORT` to the same free host port, or choose separate free ports. Existing Dashboard bindings are permitted during updates; unrelated port owners are not displaced.
 
 The image runs as the unprivileged `node` user. Compose drops capabilities, prevents gaining new privileges, uses a read-only root filesystem, and binds only the required narrow read-only inputs:
 
@@ -107,13 +100,13 @@ The image runs as the unprivileged `node` user. Compose drops capabilities, prev
 | `${VOIDSTATION_ROOT_FILESYSTEM_PATH}` | `/host/filesystems/root` |
 | `${VOIDSTATION_DATA_FILESYSTEM_PATH}` | `/host/filesystems/data` |
 
-Set the two filesystem variables to dedicated existing directories on the selected root and data filesystems. The default paths are `/var/lib/voidstation/root` and `/var/lib/voidstation/data`; create them during deployment, and ensure they are on different filesystems. The image uses `VOIDSTATION_HOST_PROC=/host/proc` plus fixed filesystem targets and never falls back to container sources if those mounts fail. Missing source files or directories make Compose fail rather than create them. Unreadable or invalid sources report unavailable. Do not work around access failures with root, privileged mode, the Docker socket, or an entire host filesystem mount.
+Set the two filesystem variables to dedicated existing empty directories on the selected root and data filesystems. There are no default probe paths. Configure the expected data filesystem UUID too; preflight verifies it and checks that the root probe belongs to `/`. The image uses `VOIDSTATION_HOST_PROC=/host/proc` plus fixed filesystem targets and never falls back to container sources if those mounts fail. Missing source files or directories make Compose fail rather than create them. Unreadable or invalid sources report unavailable. Do not work around access failures with root, privileged mode, the Docker socket, or an entire host filesystem mount.
 
 `restart: unless-stopped` restarts the container after crashes and Docker daemon restarts, provided the daemon starts at boot. A manually stopped container stays stopped. No reboot is needed to build or test this package.
 
-Port publishing defaults to loopback. `VOIDSTATION_BIND_ADDRESS` and `VOIDSTATION_PORT` can select an intended private address and free port. Never use a wildcard address such as `0.0.0.0` or expose this unauthenticated application publicly. LAN and Tailscale bindings, actual Docker exposure, host metric comparison, and restart/boot verification belong to the deployment ticket. Do not assume host firewall defaults restrict Docker-published ports. Docker Desktop measures its Linux VM, not a macOS or Windows host.
+Never expose this unauthenticated application publicly. Specific Docker bindings do not restrict source addresses or rule out router forwarding. Do not assume host firewall defaults restrict Docker-published ports. Docker Desktop measures its Linux VM, not a macOS or Windows host. See [deployment verification](docs/verification/issue-5.md) for host comparisons, crash recovery, and network verification limits.
 
-HTTP is unencrypted on a direct LAN connection. Tailscale encrypts traffic carried through its network. Authentication and HTTPS are outside this ticket; revisit authentication before adding server controls or sensitive information.
+HTTP is unencrypted on a direct LAN connection. Tailscale encrypts traffic carried through its network. Anyone allowed network access sees the same metrics. Authentication and HTTPS are outside this release; revisit authentication before adding server controls or sensitive information.
 
 ## Browser verification
 

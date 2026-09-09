@@ -12,6 +12,7 @@
     "build": "next build",
     "start": "next start --hostname 127.0.0.1",
     "docker:up": "./scripts/docker-up.sh",
+    "docker:check": "node scripts/deployment-preflight.mjs",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f dashboard",
     "typecheck": "next typegen && tsc --noEmit",

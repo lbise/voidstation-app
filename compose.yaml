@@ -1,9 +1,15 @@
+name: voidstation-app
+
+x-voidstation:
+  expected_data_filesystem_uuid: "${VOIDSTATION_DATA_FILESYSTEM_UUID:?Set VOIDSTATION_DATA_FILESYSTEM_UUID in .env}"
+
 services:
   dashboard:
     build: .
     restart: unless-stopped
     ports:
-      - "${VOIDSTATION_BIND_ADDRESS:-127.0.0.1}:${VOIDSTATION_PORT:-3000}:3000"
+      - "${VOIDSTATION_LAN_BIND_ADDRESS:?Set VOIDSTATION_LAN_BIND_ADDRESS in .env}:${VOIDSTATION_LAN_PORT:?Set VOIDSTATION_LAN_PORT in .env}:3000"
+      - "${VOIDSTATION_TAILSCALE_BIND_ADDRESS:?Set VOIDSTATION_TAILSCALE_BIND_ADDRESS in .env}:${VOIDSTATION_TAILSCALE_PORT:?Set VOIDSTATION_TAILSCALE_PORT in .env}:3000"
     read_only: true
     cap_drop:
       - ALL
@@ -33,13 +39,13 @@ services:
         bind:
           create_host_path: false
       - type: bind
-        source: ${VOIDSTATION_ROOT_FILESYSTEM_PATH:-/var/lib/voidstation/root}
+        source: "${VOIDSTATION_ROOT_FILESYSTEM_PATH:?Set VOIDSTATION_ROOT_FILESYSTEM_PATH in .env}"
         target: /host/filesystems/root
         read_only: true
         bind:
           create_host_path: false
       - type: bind
-        source: ${VOIDSTATION_DATA_FILESYSTEM_PATH:-/var/lib/voidstation/data}
+        source: "${VOIDSTATION_DATA_FILESYSTEM_PATH:?Set VOIDSTATION_DATA_FILESYSTEM_PATH in .env}"
         target: /host/filesystems/data
         read_only: true
         bind:
