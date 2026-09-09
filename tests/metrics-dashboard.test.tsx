@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MetricsDashboard } from "../src/components/metrics-dashboard";
 import type { HostMetrics } from "../src/lib/metrics-contract";
@@ -63,7 +63,7 @@ it("distinguishes initial loading from measurements that have never succeeded, w
   render(<MetricsDashboard />);
   expect(screen.getAllByText("Loading")).toHaveLength(5);
   expect(screen.queryByText("Unavailable")).toBeNull();
-  expect(screen.queryByText("0%" )).toBeNull();
+  expect(screen.queryByText("0%", { selector: ".metric-value" })).toBeNull();
   expect(screen.queryByText(/0\.0 GiB/)).toBeNull();
   expect(screen.queryByText("0 seconds")).toBeNull();
   expect(screen.queryAllByText(/Last updated/)).toHaveLength(0);
@@ -72,7 +72,7 @@ it("distinguishes initial loading from measurements that have never succeeded, w
   expect(screen.queryAllByText("Loading")).toHaveLength(0);
   expect(screen.getAllByText("The Server did not provide this measurement.")).toHaveLength(5);
   expect(screen.getAllByText("No observation received")).toHaveLength(5);
-  expect(screen.queryByText("0%" )).toBeNull();
+  expect(screen.queryByText("0%", { selector: ".metric-value" })).toBeNull();
   expect(screen.queryByText(/0\.0 GiB/)).toBeNull();
   expect(screen.queryByText("0 seconds")).toBeNull();
   expect(screen.queryByRole("alert")).toBeNull();
@@ -87,7 +87,7 @@ it("keeps every metric unavailable when the first request fails", async () => {
   expect(screen.getAllByText("The Dashboard could not request this measurement.")).toHaveLength(5);
   expect(screen.getAllByText("No observation received")).toHaveLength(5);
   expect(screen.queryAllByRole("time")).toHaveLength(0);
-  expect(screen.queryByText("0%" )).toBeNull();
+  expect(screen.queryByText("0%", { selector: ".metric-value" })).toBeNull();
   expect(screen.queryByText(/0\.0 GiB/)).toBeNull();
 });
 
@@ -150,6 +150,41 @@ it("retains every measurement and timestamp during a whole-request failure", asy
   }
 });
 
+it("exposes reading timestamps through an accessible clock control", async () => {
+  render(<MetricsDashboard />);
+  await settle();
+
+  const trigger = screen.getByRole("button", { name: "CPU reading details" });
+  expect(trigger).toBeTruthy();
+  fireEvent.click(trigger);
+
+  expect(screen.getByRole("dialog").textContent).toContain("CPU");
+  expect(screen.getByRole("dialog").textContent).toContain("1/2/2026");
+
+  fireEvent.keyDown(document, { key: "Escape" });
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+it("plots successful CPU observations and does not add stale values", async () => {
+  const first = new Date(Date.now() - 1_000).toISOString();
+  serve(observations(first));
+  render(<MetricsDashboard />);
+  await settle();
+
+  const chart = () => screen.getByRole("img", { name: /CPU history/ });
+  expect(chart().querySelectorAll("circle")).toHaveLength(1);
+
+  await advance();
+  const second = new Date(Date.now() - 1_000).toISOString();
+  serve(observations(second));
+  await advance();
+  expect(chart().querySelectorAll("circle")).toHaveLength(2);
+
+  serve({ ...observations(second), cpu: { ...unavailable, unit: "percent" } });
+  await advance();
+  expect(chart().querySelectorAll("circle")).toHaveLength(2);
+});
+
 it("returns stale measurements to current after a later request succeeds", async () => {
   render(<MetricsDashboard />);
   await settle();
@@ -162,7 +197,7 @@ it("returns stale measurements to current after a later request succeeds", async
   for (const title of ["CPU", "Uptime", "RAM", "Root filesystem", "Data filesystem"]) {
     const card = cardFor(title);
     expect(card.getAttribute("data-state")).toBe("available");
-    expect(within(card).getByText("Current")).toBeTruthy();
+    expect(within(card).queryByText("Current")).toBeNull();
     expect(within(card).getByRole("time").getAttribute("datetime")).toBe(THIRD);
   }
 });

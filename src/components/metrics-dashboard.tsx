@@ -3,13 +3,15 @@
 import { AlertTriangle, Clock3, Cpu, HardDrive, MemoryStick, Radio, Unplug } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
+import { CpuHistoryChart, useCpuHistory } from "@/components/cpu-history";
+import { ReadingInfo } from "@/components/reading-info";
+
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
   CardAction,
   CardContent,
-  CardDescription,
   CardFooter,
   CardHeader,
   CardTitle,
@@ -275,11 +277,23 @@ function StatusBadge({ status }: { status: ReadingStatus }) {
     );
   }
 
-  return (
-    <Badge variant="secondary">
-      <Radio data-icon="inline-start" aria-hidden="true" />
-      Current
-    </Badge>
+  return null;
+}
+
+function ObservationTime({
+  observedAt,
+  hidden = false,
+}: {
+  observedAt: string | null;
+  hidden?: boolean;
+}) {
+  const className = hidden ? "visually-hidden" : undefined;
+  return observedAt ? (
+    <time className={className} dateTime={observedAt}>
+      {formatObservedAt(observedAt)}
+    </time>
+  ) : (
+    <span className={className}>No observation received</span>
   );
 }
 
@@ -290,6 +304,7 @@ function MetricCard({
   status,
   observedAt,
   children,
+  readingKind,
 }: {
   title: string;
   description: string;
@@ -297,16 +312,18 @@ function MetricCard({
   status: ReadingStatus;
   observedAt: string | null;
   children: ReactNode;
+  readingKind?: "cpu";
 }) {
   return (
-    <Card className="metric-card" data-state={status}>
+    <Card
+      className="metric-card"
+      data-reading={readingKind}
+      data-state={status}
+    >
       <CardHeader>
-        <div>
-          <div className="metric-card__title-row">
-            {icon}
-            <CardTitle>{title}</CardTitle>
-          </div>
-          <CardDescription>{description}</CardDescription>
+        <div className="metric-card__title-row">
+          {icon}
+          <CardTitle>{title}</CardTitle>
         </div>
         <CardAction>
           <StatusBadge status={status} />
@@ -314,14 +331,56 @@ function MetricCard({
       </CardHeader>
       <CardContent className="metric-card__content">{children}</CardContent>
       <CardFooter className="metric-footer">
-        <Clock3 aria-hidden="true" />
-        {observedAt ? (
-          <time dateTime={observedAt}>Last updated {formatObservedAt(observedAt)}</time>
-        ) : (
-          "No observation received"
-        )}
+        <ReadingInfo title={title} observedAt={observedAt} status={status} detail={description} />
+        <ObservationTime observedAt={observedAt} />
       </CardFooter>
     </Card>
+  );
+}
+
+function UptimeInline({
+  status,
+  observedAt,
+  value,
+  unavailableCause,
+}: {
+  status: ReadingStatus;
+  observedAt: string | null;
+  value: number | null;
+  unavailableCause: UnavailableCause;
+}) {
+  return (
+    <article className="uptime-inline metric-card" data-slot="card" data-state={status}>
+      <header className="uptime-inline__header">
+        <div className="metric-card__title-row">
+          <Clock3 className="metric-card__icon" aria-hidden="true" />
+          <h2 data-slot="card-title">Uptime</h2>
+        </div>
+        <div className="uptime-inline__actions">
+          <StatusBadge status={status} />
+          <ReadingInfo
+            title="Uptime"
+            observedAt={observedAt}
+            status={status}
+            detail="Server uptime since boot"
+          />
+        </div>
+      </header>
+      <div className="uptime-inline__reading">
+        {status === "loading" ? (
+          <LoadingReading label="uptime" />
+        ) : value !== null ? (
+          <p className="metric-value" aria-live="polite" aria-atomic="true">
+            {formatUptime(value)}
+          </p>
+        ) : (
+          <UnavailableReading cause={unavailableCause} />
+        )}
+      </div>
+      {status !== "loading" && (
+        <ObservationTime observedAt={observedAt} hidden />
+      )}
+    </article>
   );
 }
 
@@ -526,6 +585,11 @@ export function MetricsDashboard() {
   const rootFilesystem = metrics.rootFilesystem.measurement;
   const dataFilesystem = metrics.dataFilesystem.measurement;
   const unavailableCause: UnavailableCause = requestFailure ? "request" : "metric";
+  const cpuHistory = useCpuHistory({
+    status: cpuStatus,
+    value: cpu?.value ?? null,
+    observedAt: cpu?.observedAt ?? null,
+  });
 
   return (
     <section className="metrics-section" aria-label="Server measurements">
@@ -538,6 +602,12 @@ export function MetricsDashboard() {
           </AlertDescription>
         </Alert>
       )}
+      <UptimeInline
+        status={uptimeStatus}
+        observedAt={uptime?.observedAt ?? null}
+        value={uptime?.value ?? null}
+        unavailableCause={unavailableCause}
+      />
       <div className="metrics-grid">
         <MetricCard
           title="CPU"
@@ -545,34 +615,26 @@ export function MetricsDashboard() {
           icon={<Cpu className="metric-card__icon" aria-hidden="true" />}
           status={cpuStatus}
           observedAt={cpu?.observedAt ?? null}
+          readingKind="cpu"
         >
-          {cpuStatus === "loading" ? (
-            <LoadingReading label="CPU" />
-          ) : cpu ? (
+          {cpuStatus === "loading" && <LoadingReading label="CPU" />}
+          {cpu && (
             <p className="metric-value" aria-live="polite" aria-atomic="true">
               {formatCpu(cpu.value)}
             </p>
-          ) : (
+          )}
+          {!cpu && cpuStatus !== "loading" && (
             <UnavailableReading cause={unavailableCause} />
           )}
-        </MetricCard>
-
-        <MetricCard
-          title="Uptime"
-          description="Server uptime since boot"
-          icon={<Clock3 className="metric-card__icon" aria-hidden="true" />}
-          status={uptimeStatus}
-          observedAt={uptime?.observedAt ?? null}
-        >
-          {uptimeStatus === "loading" ? (
-            <LoadingReading label="uptime" />
-          ) : uptime ? (
-            <p className="metric-value" aria-live="polite" aria-atomic="true">
-              {formatUptime(uptime.value)}
-            </p>
-          ) : (
-            <UnavailableReading cause={unavailableCause} />
-          )}
+          <CpuHistoryChart
+            history={cpuHistory}
+            emptyMessage={cpuStatus === "unavailable" ? "History unavailable" : undefined}
+            emptyDescription={
+              cpuStatus === "unavailable"
+                ? "A graph will appear after a successful CPU observation."
+                : undefined
+            }
+          />
         </MetricCard>
 
         <MetricCard
