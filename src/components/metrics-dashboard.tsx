@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, Clock3, MemoryStick, Radio, Unplug } from "lucide-react";
+import { AlertTriangle, Clock3, Cpu, HardDrive, MemoryStick, Radio, Unplug } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -23,7 +23,7 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "@/components/ui/empty";
-import type { HostMetrics, Measurement, RamUsage } from "@/lib/metrics-contract";
+import type { DiskSpace, HostMetrics, Measurement, RamUsage } from "@/lib/metrics-contract";
 
 const POLL_INTERVAL_MS = 5_000;
 const REQUEST_TIMEOUT_MS = 4_000;
@@ -36,8 +36,11 @@ type MetricState<T, U extends string> = {
 };
 
 type DashboardState = {
+  cpu: MetricState<number, "percent">;
   uptime: MetricState<number, "seconds">;
   ram: MetricState<RamUsage, "bytes">;
+  rootFilesystem: MetricState<DiskSpace, "bytes">;
+  dataFilesystem: MetricState<DiskSpace, "bytes">;
 };
 
 type ReadingStatus = "loading" | "available" | "stale" | "unavailable";
@@ -54,8 +57,11 @@ const emptyMetric = <T, U extends string>(): MetricState<T, U> => ({
 });
 
 const initialState: DashboardState = {
+  cpu: emptyMetric<number, "percent">(),
   uptime: emptyMetric<number, "seconds">(),
   ram: emptyMetric<RamUsage, "bytes">(),
+  rootFilesystem: emptyMetric<DiskSpace, "bytes">(),
+  dataFilesystem: emptyMetric<DiskSpace, "bytes">(),
 };
 
 function reconcileMetric<T, U extends string>(
@@ -102,13 +108,30 @@ function isByteCount(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
-function isUnavailableMeasurement(value: unknown, unit: "seconds" | "bytes"): boolean {
+function isUnavailableMeasurement(value: unknown, unit: "seconds" | "bytes" | "percent"): boolean {
   return (
     isRecord(value) &&
     value.status === "unavailable" &&
     value.value === null &&
     value.unit === unit &&
     value.observedAt === null
+  );
+}
+
+function isCpuMeasurement(value: unknown): value is HostMetrics["cpu"] {
+  if (isUnavailableMeasurement(value, "percent")) {
+    return true;
+  }
+
+  return (
+    isRecord(value) &&
+    value.status === "available" &&
+    typeof value.value === "number" &&
+    Number.isFinite(value.value) &&
+    value.value >= 0 &&
+    value.value <= 100 &&
+    value.unit === "percent" &&
+    isObservedAt(value.observedAt)
   );
 }
 
@@ -129,6 +152,17 @@ function isUptimeMeasurement(value: unknown): value is HostMetrics["uptime"] {
 }
 
 function isRamMeasurement(value: unknown): value is HostMetrics["ram"] {
+  return isByteMeasurement(value, true);
+}
+
+function isFilesystemMeasurement(value: unknown): value is HostMetrics["rootFilesystem"] {
+  return isByteMeasurement(value, false);
+}
+
+function isByteMeasurement(
+  value: unknown,
+  requireExactArithmetic: boolean,
+): value is HostMetrics["ram"] | HostMetrics["rootFilesystem"] {
   if (isUnavailableMeasurement(value, "bytes")) {
     return true;
   }
@@ -148,17 +182,21 @@ function isRamMeasurement(value: unknown): value is HostMetrics["ram"] {
     isByteCount(used) &&
     isByteCount(available) &&
     isByteCount(total) &&
+    total > 0 &&
     used <= total &&
     available <= total &&
-    used === total - available
+    (requireExactArithmetic ? used === total - available : used + available <= total)
   );
 }
 
 function isHostMetrics(value: unknown): value is HostMetrics {
   return (
     isRecord(value) &&
+    isCpuMeasurement(value.cpu) &&
     isUptimeMeasurement(value.uptime) &&
-    isRamMeasurement(value.ram)
+    isRamMeasurement(value.ram) &&
+    isFilesystemMeasurement(value.rootFilesystem) &&
+    isFilesystemMeasurement(value.dataFilesystem)
   );
 }
 
@@ -196,6 +234,10 @@ function formatPercentage(used: number, total: number): number {
   }
 
   return Math.min(100, Math.max(0, (used / total) * 100));
+}
+
+function formatCpu(value: number): string {
+  return `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })}%`;
 }
 
 function formatObservedAt(observedAt: string): string {
@@ -312,6 +354,39 @@ function UnavailableReading({ cause }: { cause: UnavailableCause }) {
   );
 }
 
+function CapacityReading({ label, value }: { label: string; value: DiskSpace }) {
+  return (
+    <>
+      <p className="metric-value" aria-live="polite" aria-atomic="true">
+        {formatGiB(value.used)}
+        <span className="metric-value__unit"> used</span>
+      </p>
+      <Progress
+        className="metric-progress"
+        value={formatPercentage(value.used, value.total)}
+        aria-label={`${label} used: ${formatGiB(value.used)} of ${formatGiB(value.total)}`}
+      >
+        <ProgressLabel>{label} used</ProgressLabel>
+        <ProgressValue>{(_, progressValue) => `${Math.round(progressValue ?? 0)}%`}</ProgressValue>
+      </Progress>
+      <dl className="metric-detail-list">
+        <div className="metric-detail">
+          <dt>Used</dt>
+          <dd>{formatGiB(value.used)}</dd>
+        </div>
+        <div className="metric-detail">
+          <dt>Available</dt>
+          <dd>{formatGiB(value.available)}</dd>
+        </div>
+        <div className="metric-detail">
+          <dt>Total</dt>
+          <dd>{formatGiB(value.total)}</dd>
+        </div>
+      </dl>
+    </>
+  );
+}
+
 export function MetricsDashboard() {
   const [metrics, setMetrics] = useState<DashboardState>(initialState);
   const [initialLoading, setInitialLoading] = useState(true);
@@ -358,8 +433,11 @@ export function MetricsDashboard() {
 
         if (!disposed) {
           setMetrics((previous) => ({
+            cpu: reconcileMetric(previous.cpu, payload.cpu),
             uptime: reconcileMetric(previous.uptime, payload.uptime),
             ram: reconcileMetric(previous.ram, payload.ram),
+            rootFilesystem: reconcileMetric(previous.rootFilesystem, payload.rootFilesystem),
+            dataFilesystem: reconcileMetric(previous.dataFilesystem, payload.dataFilesystem),
           }));
           setInitialLoading(false);
           setRequestFailure(false);
@@ -368,8 +446,11 @@ export function MetricsDashboard() {
         const abortedWithoutTimeout = controller.signal.aborted && !request.timedOut;
         if (!disposed && !abortedWithoutTimeout) {
           setMetrics((previous) => ({
+            cpu: retainAfterRequestFailure(previous.cpu),
             uptime: retainAfterRequestFailure(previous.uptime),
             ram: retainAfterRequestFailure(previous.ram),
+            rootFilesystem: retainAfterRequestFailure(previous.rootFilesystem),
+            dataFilesystem: retainAfterRequestFailure(previous.dataFilesystem),
           }));
           setInitialLoading(false);
           setRequestFailure(true);
@@ -434,10 +515,16 @@ export function MetricsDashboard() {
     };
   }, []);
 
+  const cpuStatus = readingStatus(metrics.cpu, initialLoading);
   const uptimeStatus = readingStatus(metrics.uptime, initialLoading);
   const ramStatus = readingStatus(metrics.ram, initialLoading);
+  const rootFilesystemStatus = readingStatus(metrics.rootFilesystem, initialLoading);
+  const dataFilesystemStatus = readingStatus(metrics.dataFilesystem, initialLoading);
+  const cpu = metrics.cpu.measurement;
   const uptime = metrics.uptime.measurement;
   const ram = metrics.ram.measurement;
+  const rootFilesystem = metrics.rootFilesystem.measurement;
+  const dataFilesystem = metrics.dataFilesystem.measurement;
   const unavailableCause: UnavailableCause = requestFailure ? "request" : "metric";
 
   return (
@@ -452,6 +539,24 @@ export function MetricsDashboard() {
         </Alert>
       )}
       <div className="metrics-grid">
+        <MetricCard
+          title="CPU"
+          description="Overall Server utilization"
+          icon={<Cpu className="metric-card__icon" aria-hidden="true" />}
+          status={cpuStatus}
+          observedAt={cpu?.observedAt ?? null}
+        >
+          {cpuStatus === "loading" ? (
+            <LoadingReading label="CPU" />
+          ) : cpu ? (
+            <p className="metric-value" aria-live="polite" aria-atomic="true">
+              {formatCpu(cpu.value)}
+            </p>
+          ) : (
+            <UnavailableReading cause={unavailableCause} />
+          )}
+        </MetricCard>
+
         <MetricCard
           title="Uptime"
           description="Server uptime since boot"
@@ -480,38 +585,33 @@ export function MetricsDashboard() {
           {ramStatus === "loading" ? (
             <LoadingReading label="RAM" />
           ) : ram ? (
-            <>
-              <p className="metric-value" aria-live="polite" aria-atomic="true">
-                {formatGiB(ram.value.used)}
-                <span className="metric-value__unit"> used</span>
-              </p>
-              <Progress
-                className="metric-progress"
-                value={formatPercentage(ram.value.used, ram.value.total)}
-                aria-label={`RAM used: ${formatGiB(ram.value.used)} of ${formatGiB(ram.value.total)}`}
-              >
-                <ProgressLabel>RAM used</ProgressLabel>
-                <ProgressValue>{(_, value) => `${Math.round(value ?? 0)}%`}</ProgressValue>
-              </Progress>
-              <dl className="metric-detail-list">
-                <div className="metric-detail">
-                  <dt>Used</dt>
-                  <dd>{formatGiB(ram.value.used)}</dd>
-                </div>
-                <div className="metric-detail">
-                  <dt>Available</dt>
-                  <dd>{formatGiB(ram.value.available)}</dd>
-                </div>
-                <div className="metric-detail">
-                  <dt>Total</dt>
-                  <dd>{formatGiB(ram.value.total)}</dd>
-                </div>
-              </dl>
-            </>
+            <CapacityReading label="RAM" value={ram.value} />
           ) : (
             <UnavailableReading cause={unavailableCause} />
           )}
         </MetricCard>
+
+        {[
+          { title: "Root filesystem", description: "Disk space on the Server root filesystem", icon: <HardDrive className="metric-card__icon" aria-hidden="true" />, status: rootFilesystemStatus, measurement: rootFilesystem },
+          { title: "Data filesystem", description: "Disk space on the Server data filesystem", icon: <HardDrive className="metric-card__icon" aria-hidden="true" />, status: dataFilesystemStatus, measurement: dataFilesystem },
+        ].map(({ title, description, icon, status, measurement }) => (
+          <MetricCard
+            key={title}
+            title={title}
+            description={description}
+            icon={icon}
+            status={status}
+            observedAt={measurement?.observedAt ?? null}
+          >
+            {status === "loading" ? (
+              <LoadingReading label={title} />
+            ) : measurement ? (
+              <CapacityReading label={title} value={measurement.value} />
+            ) : (
+              <UnavailableReading cause={unavailableCause} />
+            )}
+          </MetricCard>
+        ))}
       </div>
     </section>
   );

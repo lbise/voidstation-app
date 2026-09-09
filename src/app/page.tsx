@@ -8,7 +8,7 @@ export default function Home() {
           <p className="dashboard-wordmark">Voidstation</p>
           <h1 className="dashboard-title">Server status</h1>
           <p className="dashboard-summary">
-            Server Uptime and RAM, refreshed every five seconds while viewing.
+            Server CPU, RAM, Disk space, and uptime, refreshed every five seconds while viewing.
           </p>
         </div>
       </header>

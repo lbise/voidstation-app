@@ -1,6 +1,6 @@
 # Voidstation
 
-A read-only Dashboard for Server Uptime and RAM. Both users see the same readings without application login. This implements [issue #2](https://github.com/lbise/voidstation-app/issues/2); CPU, Disk space, and actual Ubuntu deployment are separate tickets.
+A read-only Dashboard for Server CPU, RAM, Disk space, and Uptime. Both users see the same readings without application login. This implements [issue #3](https://github.com/lbise/voidstation-app/issues/3), building on [issue #2](https://github.com/lbise/voidstation-app/issues/2).
 
 ## Local development
 
@@ -31,6 +31,12 @@ GitHub Actions runs installation, type checking, and `npm test`. The HTTP test s
 
 ```json
 {
+  "cpu": {
+    "status": "available",
+    "value": 42.8571428571,
+    "unit": "percent",
+    "observedAt": "2026-01-02T03:04:05.000Z"
+  },
   "uptime": {
     "status": "available",
     "value": 90061.25,
@@ -42,21 +48,35 @@ GitHub Actions runs installation, type checking, and `npm test`. The HTTP test s
     "value": { "used": 5368709120, "available": 3221225472, "total": 8589934592 },
     "unit": "bytes",
     "observedAt": "2026-01-02T03:04:05.001Z"
+  },
+  "rootFilesystem": {
+    "status": "available",
+    "value": { "used": 400000000000, "available": 50000000000, "total": 500000000000 },
+    "unit": "bytes",
+    "observedAt": "2026-01-02T03:04:05.002Z"
+  },
+  "dataFilesystem": {
+    "status": "available",
+    "value": { "used": 700000000000, "available": 300000000000, "total": 1000000000000 },
+    "unit": "bytes",
+    "observedAt": "2026-01-02T03:04:05.003Z"
   }
 }
 ```
 
 An unavailable measurement has `status: "unavailable"`, `value: null`, `observedAt: null`, and retains its unit. A failed observation has no measurement timestamp. A successful source gets its own timestamp immediately after reading. No raw host input, filesystem path, or error detail appears in the response.
 
+- CPU is overall Server utilization from successive aggregate `/proc/stat` samples. The first sample establishes a baseline and is unavailable; invalid or reset counter deltas are unavailable rather than fabricated.
 - Uptime is the first value in the host's `/proc/uptime`, in seconds since boot. It is not Node.js process uptime.
 - RAM used is `MemTotal - MemAvailable`. Linux's `kB` fields are converted with 1024 bytes per unit. `MemAvailable` accounts for reclaimable memory; `MemFree` alone does not. Missing or invalid available memory is unavailable, not a fallback estimate.
+- Disk space is measured independently for the root and data mounted filesystems. Used space is total minus filesystem free blocks; Available is the unprivileged-user `bavail` capacity, so reserved space is not incorrectly counted as available. A data path on the same filesystem as the root path is unavailable.
 - The Dashboard labels all memory quantities in GiB, where 1 GiB is 1,073,741,824 bytes.
 - Readings refresh every five seconds during active viewing. Browser suspension can pause scheduling. Resuming a visible page triggers a refresh.
 - Before the first response, cards show loading. A failed metric with no prior success shows unavailable. After a failure, any previous successful value stays visible as a **Stale reading**, with its original observation time. Request failures show a warning and retry automatically. Successful retries clear the stale state. Zero remains a valid reading.
 
 `src/lib/host-metrics.ts` exposes `collectHostMetrics(input)` and the single `HostInput` substitution interface. Tests supply source text and observation times there. Linux file access lives in `src/lib/linux-host-input.ts`; parsing, validation, and calculations stay in the host-metrics module. `src/lib/metrics-contract.ts` is safe to import in the UI. Additional CPU and Disk space measurements can use the same per-metric contract without putting Linux collection in React.
 
-`VOIDSTATION_HOST_PROC` selects the source directory at server startup. Only the fixed filenames `uptime` and `meminfo` are read. This deployment configuration also lets HTTP tests use temporary files through the real adapter. There is no test endpoint, fixture mode, arbitrary file query, or query-string input substitution. Do not point this variable at untrusted files or named pipes.
+`VOIDSTATION_HOST_PROC` selects the source directory at server startup. Only the fixed filenames `stat`, `uptime`, and `meminfo` are read. `VOIDSTATION_HOST_ROOT_FS` and `VOIDSTATION_HOST_DATA_FS` select the two filesystem probe directories at startup. The adapter reads filesystem capacity and device identity from those fixed paths; it does not accept paths from HTTP requests. There is no test endpoint, fixture mode, arbitrary file query, or query-string input substitution. Do not point these variables at untrusted files or named pipes.
 
 ## Docker package
 
@@ -69,14 +89,17 @@ docker compose logs dashboard
 docker compose down
 ```
 
-The image runs as the unprivileged `node` user. Compose drops capabilities, prevents gaining new privileges, uses a read-only root filesystem, and binds only two read-only host files:
+The image runs as the unprivileged `node` user. Compose drops capabilities, prevents gaining new privileges, uses a read-only root filesystem, and binds only the required narrow read-only inputs:
 
 | Host source | Container target |
 | --- | --- |
+| `/proc/stat` | `/host/proc/stat` |
 | `/proc/uptime` | `/host/proc/uptime` |
 | `/proc/meminfo` | `/host/proc/meminfo` |
+| `${VOIDSTATION_ROOT_FILESYSTEM_PATH}` | `/host/filesystems/root` |
+| `${VOIDSTATION_DATA_FILESYSTEM_PATH}` | `/host/filesystems/data` |
 
-The image uses `VOIDSTATION_HOST_PROC=/host/proc` and never falls back to container sources if those mounts fail. Missing source files make Compose fail rather than create directories. Unreadable or invalid sources report unavailable. Do not work around access failures with root, privileged mode, the Docker socket, or an entire host filesystem mount.
+Set the two filesystem variables to dedicated existing directories on the selected root and data filesystems. The default paths are `/var/lib/voidstation/root` and `/var/lib/voidstation/data`; create them during deployment, and ensure they are on different filesystems. The image uses `VOIDSTATION_HOST_PROC=/host/proc` plus fixed filesystem targets and never falls back to container sources if those mounts fail. Missing source files or directories make Compose fail rather than create them. Unreadable or invalid sources report unavailable. Do not work around access failures with root, privileged mode, the Docker socket, or an entire host filesystem mount.
 
 `restart: unless-stopped` restarts the container after crashes and Docker daemon restarts, provided the daemon starts at boot. A manually stopped container stays stopped. No reboot is needed to build or test this package.
 

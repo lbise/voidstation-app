@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,11 +10,15 @@ import type { HostMetrics } from "../src/lib/metrics-contract";
 
 let app: ChildProcess | undefined;
 let directory: string;
+let dataDirectory: string;
 let origin: string;
 let output = "";
 
 beforeAll(async () => {
   directory = await mkdtemp(join(tmpdir(), "voidstation-http-"));
+  // /dev/shm gives the integration test a filesystem identity distinct from /tmp.
+  dataDirectory = await mkdtemp(join("/dev/shm", "voidstation-http-data-"));
+  await writeFile(join(directory, "stat"), "cpu  100 20 30 40 10 0 0 0 0 0\n");
   await writeFile(join(directory, "uptime"), "90061.25 180000.00\n");
   await writeFile(join(directory, "meminfo"), "MemTotal: 8388608 kB\nMemAvailable: 3145728 kB\n");
 
@@ -28,7 +32,14 @@ beforeAll(async () => {
   origin = `http://127.0.0.1:${port}`;
 
   app = spawn(process.execPath, ["node_modules/next/dist/bin/next", "start", "--hostname", "127.0.0.1", "--port", String(port)], {
-    env: { ...process.env, NODE_ENV: "production", VOIDSTATION_HOST_PROC: directory, NEXT_TELEMETRY_DISABLED: "1" },
+    env: {
+      ...process.env,
+      NODE_ENV: "production",
+      VOIDSTATION_HOST_PROC: directory,
+      VOIDSTATION_HOST_ROOT_FS: directory,
+      VOIDSTATION_HOST_DATA_FS: dataDirectory,
+      NEXT_TELEMETRY_DISABLED: "1",
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
   app.stdout?.on("data", (chunk) => { output += chunk; });
@@ -55,6 +66,7 @@ afterAll(async () => {
     clearTimeout(force);
   }
   if (directory) await rm(directory, { recursive: true, force: true });
+  if (dataDirectory) await rm(dataDirectory, { recursive: true, force: true });
 });
 
 it("serves real host measurements, fresh observations, partial failure and recovery over HTTP", async () => {
@@ -66,21 +78,39 @@ it("serves real host measurements, fresh observations, partial failure and recov
   expect(response.status).toBe(200);
   expect(response.headers.get("cache-control")).toContain("no-store");
   expect(response.headers.get("content-type")).toContain("application/json");
-  expect(metrics).toEqual({
-    uptime: { status: "available", value: 90061.25, unit: "seconds", observedAt: expect.any(String) },
-    ram: {
-      status: "available", unit: "bytes", observedAt: expect.any(String),
-      value: { total: 8589934592, available: 3221225472, used: 5368709120 },
-    },
+  expect(metrics.cpu).toEqual({ status: "unavailable", value: null, unit: "percent", observedAt: null });
+  expect(metrics.uptime).toEqual({ status: "available", value: 90061.25, unit: "seconds", observedAt: expect.any(String) });
+  expect(metrics.ram).toEqual({
+    status: "available", unit: "bytes", observedAt: expect.any(String),
+    value: { total: 8589934592, available: 3221225472, used: 5368709120 },
   });
-  for (const metric of Object.values(metrics)) {
-    expect(Date.parse(metric.observedAt!)).toBeGreaterThanOrEqual(before);
-    expect(Date.parse(metric.observedAt!)).toBeLessThanOrEqual(after);
+  for (const metric of [metrics.uptime, metrics.ram, metrics.rootFilesystem, metrics.dataFilesystem]) {
+    expect(metric.status).toBe("available");
+    if (metric.status === "available") {
+      expect(Date.parse(metric.observedAt)).toBeGreaterThanOrEqual(before);
+      expect(Date.parse(metric.observedAt)).toBeLessThanOrEqual(after);
+    }
   }
+  for (const metric of [metrics.rootFilesystem, metrics.dataFilesystem]) {
+    if (metric.status === "available") {
+      expect(metric.unit).toBe("bytes");
+      expect(metric.value.total).toBeGreaterThan(0);
+      expect(metric.value.used + metric.value.available).toBeLessThanOrEqual(metric.value.total);
+    }
+  }
+
+  await writeFile(join(directory, "stat"), "cpu  110 25 35 50 15 0 0 0 0 0\n");
+  const secondBefore = Date.now();
+  const second = await (await fetch(`${origin}/api/metrics`)).json() as HostMetrics;
+  const secondAfter = Date.now();
+  expect(second.cpu).toEqual({ status: "available", value: (20 / 35) * 100, unit: "percent", observedAt: expect.any(String) });
+  expect(Date.parse(second.cpu.observedAt!)).toBeGreaterThanOrEqual(secondBefore);
+  expect(Date.parse(second.cpu.observedAt!)).toBeLessThanOrEqual(secondAfter);
 
   // Separate observations beyond the wall clock's millisecond resolution.
   await delay(2);
   await rm(join(directory, "meminfo"));
+  await writeFile(join(directory, "stat"), "cpu  120 30 40 60 20 0 0 0 0 0\n");
   await writeFile(join(directory, "uptime"), "90066.25 180000.00\n");
   // Query strings cannot select arbitrary files or inject readings.
   const partialResponse = await fetch(`${origin}/api/metrics?path=/etc/passwd&uptime=0&fixture=zero`, {
@@ -89,11 +119,18 @@ it("serves real host measurements, fresh observations, partial failure and recov
   const partial = await partialResponse.json() as HostMetrics;
   expect(partialResponse.status).toBe(200);
   expect(partialResponse.headers.get("cache-control")).toContain("no-store");
-  expect(partial).toEqual({
-    uptime: { status: "available", value: 90066.25, unit: "seconds", observedAt: expect.any(String) },
-    ram: { status: "unavailable", value: null, unit: "bytes", observedAt: null },
-  });
+  expect(partial.cpu).toEqual({ status: "available", value: (20 / 35) * 100, unit: "percent", observedAt: expect.any(String) });
+  expect(partial.uptime).toEqual({ status: "available", value: 90066.25, unit: "seconds", observedAt: expect.any(String) });
+  expect(partial.ram).toEqual({ status: "unavailable", value: null, unit: "bytes", observedAt: null });
+  expect(partial.rootFilesystem.status).toBe("available");
+  expect(partial.dataFilesystem.status).toBe("available");
   expect(Date.parse(partial.uptime.observedAt!)).toBeGreaterThan(Date.parse(metrics.uptime.observedAt!));
+
+  await rm(dataDirectory, { recursive: true, force: true });
+  const missingData = await (await fetch(`${origin}/api/metrics`)).json() as HostMetrics;
+  expect(missingData.rootFilesystem.status).toBe("available");
+  expect(missingData.dataFilesystem).toEqual({ status: "unavailable", value: null, unit: "bytes", observedAt: null });
+  await mkdir(dataDirectory);
 
   await writeFile(join(directory, "meminfo"), "MemTotal: 8388608 kB\nMemAvailable: 8388608 kB\n");
   const recovered = await (await fetch(`${origin}/api/metrics`)).json() as HostMetrics;

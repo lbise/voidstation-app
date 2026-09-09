@@ -11,7 +11,15 @@ services:
       - no-new-privileges:true
     tmpfs:
       - /tmp:size=16m,noexec,nosuid
+    # Bind one dedicated directory on each selected host filesystem. Do not
+    # replace these with / or a broad host mount.
     volumes:
+      - type: bind
+        source: /proc/stat
+        target: /host/proc/stat
+        read_only: true
+        bind:
+          create_host_path: false
       - type: bind
         source: /proc/uptime
         target: /host/proc/uptime
@@ -21,6 +29,18 @@ services:
       - type: bind
         source: /proc/meminfo
         target: /host/proc/meminfo
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${VOIDSTATION_ROOT_FILESYSTEM_PATH:-/var/lib/voidstation/root}
+        target: /host/filesystems/root
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${VOIDSTATION_DATA_FILESYSTEM_PATH:-/var/lib/voidstation/data}
+        target: /host/filesystems/data
         read_only: true
         bind:
           create_host_path: false
