@@ -80,14 +80,22 @@ An unavailable measurement has `status: "unavailable"`, `value: null`, `observed
 
 ## Docker package
 
-On a Linux Docker host:
+On a Linux Docker host, the helper automatically binds to the host address used for the default route (for example `192.168.1.11`) instead of requiring an inline environment variable:
 
 ```sh
-docker compose up --build -d
-# Open http://127.0.0.1:3000 on that machine
-docker compose logs dashboard
-docker compose down
+npm run docker:up
+# Open http://<host-LAN-address>:3000
+npm run docker:logs
+npm run docker:down
 ```
+
+The helper falls back to `127.0.0.1` when the `ip` command cannot determine an address. Set `VOIDSTATION_BIND_ADDRESS` explicitly when you need a different private interface:
+
+```sh
+VOIDSTATION_BIND_ADDRESS=100.118.62.125 npm run docker:up
+```
+
+It runs `docker compose up --build -d`, so rebuilding after code changes remains automatic.
 
 The image runs as the unprivileged `node` user. Compose drops capabilities, prevents gaining new privileges, uses a read-only root filesystem, and binds only the required narrow read-only inputs:
 
