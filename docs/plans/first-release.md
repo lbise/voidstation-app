@@ -21,7 +21,15 @@
 - Start with a dark shadcn dashboard, metric cards, separate storage bars, and a last-updated indicator. Stack cards on mobile and omit a theme switcher. Refine visual details during implementation.
 - Keep metric collection separate from the UI. Defer database and ORM selection until a persistent feature needs them.
 
-## Proposed delivery checks
+## Testing infrastructure
+
+- Establish Vitest with real tests for CPU utilization, RAM usage, and partial metric failure.
+- Add an HTTP integration test exercising the real metrics endpoint with controlled host inputs.
+- Use agent-browser for desktop/mobile rendering, screenshots, and visible loading, failure, and recovery checks. Install the CLI as a development tool; it was not available during planning.
+- Do not add a Playwright test suite for this release. Agent-run browser checks do not replace repeatable automated tests.
+- Document local test commands and run type checks, automated tests, and the production build in GitHub Actions without requiring private-server access.
+
+## Delivery checks
 
 - Verify host CPU, memory, uptime, and filesystem readings against Ubuntu readings, allowing for sample timing and unit conversion.
 - Test metric calculations, initial loading, partial failures, stale readings, and recovery.
@@ -29,7 +37,7 @@
 - Verify LAN and Tailscale reachability and intended port bindings without disturbing existing workloads.
 - Verify container restart behavior and inspect boot-start configuration. Do not reboot the home server as part of testing without separate permission.
 
-## Approval
+## Published specification
 
-Scope decisions are settled. Final confirmation of the plan and delivery checks is pending before implementation.
+The first-release specification is [GitHub issue #1](https://github.com/lbise/voidstation-app/issues/1), labeled `ready-for-agent`. Use that issue as the implementation specification. No application implementation or deployment was performed during this planning session.
 
