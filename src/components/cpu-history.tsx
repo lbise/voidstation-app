@@ -151,8 +151,11 @@ export function CpuHistoryChart({
     return () => observer.disconnect();
   }, []);
 
-  const path = chartPath(history.samples, history, width);
-  const waiting = history.samples.length === 0;
+  const chartHistory = history.samples.length
+    ? { ...history, windowStart: Math.max(history.windowStart, history.samples[0].timestamp) }
+    : history;
+  const path = chartPath(history.samples, chartHistory, width);
+  const waiting = history.samples.length < 2;
   const right = width - 8;
 
   return (
@@ -183,18 +186,9 @@ export function CpuHistoryChart({
         <text className="cpu-history__axis-label" x={0} y={CHART_TOP + 4}>100%</text>
         <text className="cpu-history__axis-label" x={8} y={(CHART_TOP + CHART_BOTTOM) / 2 + 4}>50%</text>
         <text className="cpu-history__axis-label" x={16} y={CHART_BOTTOM + 4}>0%</text>
-        <text className="cpu-history__axis-label" x={CHART_LEFT} y={150}>−5 min</text>
+        <text className="cpu-history__axis-label" x={CHART_LEFT} y={150}>Start</text>
         <text className="cpu-history__axis-label" x={right} y={150} textAnchor="end">Now</text>
         {path && <path className="cpu-history__line" d={path} />}
-        {history.samples.map((sample) => (
-          <circle
-            key={sample.timestamp}
-            className="cpu-history__point"
-            cx={chartX(sample.timestamp, history, width)}
-            cy={chartY(sample.percent)}
-            r={2.5}
-          />
-        ))}
         {waiting && (
           <text
             className="cpu-history__waiting"

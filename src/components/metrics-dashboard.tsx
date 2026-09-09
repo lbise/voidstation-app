@@ -12,7 +12,6 @@ import {
   Card,
   CardAction,
   CardContent,
-  CardFooter,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -280,46 +279,21 @@ function StatusBadge({ status }: { status: ReadingStatus }) {
   return null;
 }
 
-function ObservationTime({
-  observedAt,
-  hidden = false,
-}: {
-  observedAt: string | null;
-  hidden?: boolean;
-}) {
-  const className = hidden ? "visually-hidden" : undefined;
-  return observedAt ? (
-    <time className={className} dateTime={observedAt}>
-      {formatObservedAt(observedAt)}
-    </time>
-  ) : (
-    <span className={className}>No observation received</span>
-  );
-}
-
 function MetricCard({
   title,
-  description,
   icon,
   status,
-  observedAt,
   children,
   readingKind,
 }: {
   title: string;
-  description: string;
   icon: ReactNode;
   status: ReadingStatus;
-  observedAt: string | null;
   children: ReactNode;
   readingKind?: "cpu";
 }) {
   return (
-    <Card
-      className="metric-card"
-      data-reading={readingKind}
-      data-state={status}
-    >
+    <Card className="metric-card" data-reading={readingKind} data-state={status}>
       <CardHeader>
         <div className="metric-card__title-row">
           {icon}
@@ -330,22 +304,16 @@ function MetricCard({
         </CardAction>
       </CardHeader>
       <CardContent className="metric-card__content">{children}</CardContent>
-      <CardFooter className="metric-footer">
-        <ReadingInfo title={title} observedAt={observedAt} status={status} detail={description} />
-        <ObservationTime observedAt={observedAt} />
-      </CardFooter>
     </Card>
   );
 }
 
 function UptimeInline({
   status,
-  observedAt,
   value,
   unavailableCause,
 }: {
   status: ReadingStatus;
-  observedAt: string | null;
   value: number | null;
   unavailableCause: UnavailableCause;
 }) {
@@ -356,15 +324,7 @@ function UptimeInline({
           <Clock3 className="metric-card__icon" aria-hidden="true" />
           <h2 data-slot="card-title">Uptime</h2>
         </div>
-        <div className="uptime-inline__actions">
-          <StatusBadge status={status} />
-          <ReadingInfo
-            title="Uptime"
-            observedAt={observedAt}
-            status={status}
-            detail="Server uptime since boot"
-          />
-        </div>
+        <StatusBadge status={status} />
       </header>
       <div className="uptime-inline__reading">
         {status === "loading" ? (
@@ -377,9 +337,6 @@ function UptimeInline({
           <UnavailableReading cause={unavailableCause} />
         )}
       </div>
-      {status !== "loading" && (
-        <ObservationTime observedAt={observedAt} hidden />
-      )}
     </article>
   );
 }
@@ -443,6 +400,82 @@ function CapacityReading({ label, value }: { label: string; value: DiskSpace }) 
         </div>
       </dl>
     </>
+  );
+}
+
+function storageStatus(
+  root: MetricState<DiskSpace, "bytes">,
+  data: MetricState<DiskSpace, "bytes">,
+  initialLoading: boolean,
+): ReadingStatus {
+  if (!root.measurement && !data.measurement) return initialLoading ? "loading" : "unavailable";
+  if (root.stale || data.stale) return "stale";
+  return "available";
+}
+
+function StorageItem({
+  mount,
+  status,
+  measurement,
+}: {
+  mount: string;
+  status: ReadingStatus;
+  measurement: AvailableMeasurement<DiskSpace, "bytes"> | null;
+}) {
+  return (
+    <div className="storage-item" data-state={status}>
+      <header className="storage-item__header">
+        <h3>{mount}</h3>
+        <StatusBadge status={status} />
+      </header>
+      {status === "loading" ? (
+        <Skeleton className="storage-item__skeleton" />
+      ) : measurement ? (
+        <>
+          <p className="storage-item__value">
+            {formatGiB(measurement.value.used)} / {formatGiB(measurement.value.total)}
+          </p>
+          <Progress
+            className="storage-item__progress"
+            value={formatPercentage(measurement.value.used, measurement.value.total)}
+            aria-label={`${mount}: ${formatGiB(measurement.value.used)} used of ${formatGiB(measurement.value.total)}`}
+          />
+        </>
+      ) : (
+        <p className="storage-item__empty">No measurement</p>
+      )}
+    </div>
+  );
+}
+
+function StorageReading({
+  root,
+  data,
+  initialLoading,
+}: {
+  root: MetricState<DiskSpace, "bytes">;
+  data: MetricState<DiskSpace, "bytes">;
+  initialLoading: boolean;
+}) {
+  return (
+    <MetricCard
+      title="Storage"
+      icon={<HardDrive className="metric-card__icon" aria-hidden="true" />}
+      status={storageStatus(root, data, initialLoading)}
+    >
+      <div className="storage-list">
+        <StorageItem
+          mount="/"
+          status={readingStatus(root, initialLoading)}
+          measurement={root.measurement}
+        />
+        <StorageItem
+          mount="/data"
+          status={readingStatus(data, initialLoading)}
+          measurement={data.measurement}
+        />
+      </div>
+    </MetricCard>
   );
 }
 
@@ -577,22 +610,52 @@ export function MetricsDashboard() {
   const cpuStatus = readingStatus(metrics.cpu, initialLoading);
   const uptimeStatus = readingStatus(metrics.uptime, initialLoading);
   const ramStatus = readingStatus(metrics.ram, initialLoading);
-  const rootFilesystemStatus = readingStatus(metrics.rootFilesystem, initialLoading);
-  const dataFilesystemStatus = readingStatus(metrics.dataFilesystem, initialLoading);
   const cpu = metrics.cpu.measurement;
   const uptime = metrics.uptime.measurement;
   const ram = metrics.ram.measurement;
-  const rootFilesystem = metrics.rootFilesystem.measurement;
-  const dataFilesystem = metrics.dataFilesystem.measurement;
   const unavailableCause: UnavailableCause = requestFailure ? "request" : "metric";
   const cpuHistory = useCpuHistory({
     status: cpuStatus,
     value: cpu?.value ?? null,
     observedAt: cpu?.observedAt ?? null,
   });
+  const lastUpdated = [
+    metrics.cpu.measurement,
+    metrics.uptime.measurement,
+    metrics.ram.measurement,
+    metrics.rootFilesystem.measurement,
+    metrics.dataFilesystem.measurement,
+  ].reduce<string | null>((latest, measurement) => {
+    if (!measurement || !latest) return measurement?.observedAt ?? latest;
+    return Date.parse(measurement.observedAt) > Date.parse(latest)
+      ? measurement.observedAt
+      : latest;
+  }, null);
+  const updateStatus: ReadingStatus = initialLoading
+    ? "loading"
+    : lastUpdated
+      ? requestFailure
+        ? "stale"
+        : "available"
+      : "unavailable";
 
   return (
     <section className="metrics-section" aria-label="Server measurements">
+      <div className="metrics-toolbar">
+        <span className="metrics-toolbar__label">
+          {lastUpdated ? (
+            <time dateTime={lastUpdated}>Last update {formatObservedAt(lastUpdated)}</time>
+          ) : (
+            "No update received"
+          )}
+        </span>
+        <ReadingInfo
+          title="Server readings"
+          observedAt={lastUpdated}
+          status={updateStatus}
+          detail="The displayed readings share the latest successful observation time."
+        />
+      </div>
       {requestFailure && (
         <Alert variant="destructive" className="metrics-request-alert">
           <AlertTriangle aria-hidden="true" />
@@ -604,17 +667,14 @@ export function MetricsDashboard() {
       )}
       <UptimeInline
         status={uptimeStatus}
-        observedAt={uptime?.observedAt ?? null}
         value={uptime?.value ?? null}
         unavailableCause={unavailableCause}
       />
       <div className="metrics-grid">
         <MetricCard
           title="CPU"
-          description="Overall Server utilization"
           icon={<Cpu className="metric-card__icon" aria-hidden="true" />}
           status={cpuStatus}
-          observedAt={cpu?.observedAt ?? null}
           readingKind="cpu"
         >
           {cpuStatus === "loading" && <LoadingReading label="CPU" />}
@@ -639,10 +699,8 @@ export function MetricsDashboard() {
 
         <MetricCard
           title="RAM"
-          description="Available memory accounts for reclaimable memory"
           icon={<MemoryStick className="metric-card__icon" aria-hidden="true" />}
           status={ramStatus}
-          observedAt={ram?.observedAt ?? null}
         >
           {ramStatus === "loading" ? (
             <LoadingReading label="RAM" />
@@ -653,27 +711,11 @@ export function MetricsDashboard() {
           )}
         </MetricCard>
 
-        {[
-          { title: "Root filesystem", description: "Disk space on the Server root filesystem", icon: <HardDrive className="metric-card__icon" aria-hidden="true" />, status: rootFilesystemStatus, measurement: rootFilesystem },
-          { title: "Data filesystem", description: "Disk space on the Server data filesystem", icon: <HardDrive className="metric-card__icon" aria-hidden="true" />, status: dataFilesystemStatus, measurement: dataFilesystem },
-        ].map(({ title, description, icon, status, measurement }) => (
-          <MetricCard
-            key={title}
-            title={title}
-            description={description}
-            icon={icon}
-            status={status}
-            observedAt={measurement?.observedAt ?? null}
-          >
-            {status === "loading" ? (
-              <LoadingReading label={title} />
-            ) : measurement ? (
-              <CapacityReading label={title} value={measurement.value} />
-            ) : (
-              <UnavailableReading cause={unavailableCause} />
-            )}
-          </MetricCard>
-        ))}
+        <StorageReading
+          root={metrics.rootFilesystem}
+          data={metrics.dataFilesystem}
+          initialLoading={initialLoading}
+        />
       </div>
     </section>
   );

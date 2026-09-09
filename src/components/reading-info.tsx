@@ -38,7 +38,7 @@ export function ReadingInfo({
         delay={700}
         closeDelay={150}
         className="reading-info-trigger"
-        aria-label={`${title} reading details`}
+        aria-label={`${title} update details`}
         onFocus={(event) => {
           if (event.currentTarget.matches(":focus-visible")) setOpen(true);
         }}
