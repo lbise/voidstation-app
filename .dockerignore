@@ -1,0 +1,12 @@
+.git
+.agents
+.hallmark
+node_modules
+.next
+.vitest
+artifacts
+docs
+tests
+*.tsbuildinfo
+.env*
+README.md

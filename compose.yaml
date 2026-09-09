@@ -1,0 +1,26 @@
+services:
+  dashboard:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${VOIDSTATION_BIND_ADDRESS:-127.0.0.1}:${VOIDSTATION_PORT:-3000}:3000"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+    volumes:
+      - type: bind
+        source: /proc/uptime
+        target: /host/proc/uptime
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /proc/meminfo
+        target: /host/proc/meminfo
+        read_only: true
+        bind:
+          create_host_path: false
