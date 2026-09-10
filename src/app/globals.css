@@ -318,10 +318,6 @@ button,
   color: var(--color-warning);
 }
 
-.metric-card[data-state="stale"] [data-slot="progress-indicator"] {
-  background: var(--color-warning);
-}
-
 .storage-list {
   display: grid;
   gap: var(--space-lg);
@@ -342,39 +338,16 @@ button,
 
 .storage-item__header h3 {
   margin: 0;
-  color: var(--color-ink-muted);
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  font-weight: 500;
-}
-
-.storage-item__value {
-  margin: 0;
   color: var(--color-ink);
-  font-family: var(--font-display);
-  font-size: var(--text-lg);
-  font-variant-numeric: tabular-nums;
-  font-weight: 700;
-  letter-spacing: -0.03em;
+  font-family: var(--font-body);
+  font-size: var(--text-base);
+  font-weight: 600;
+  overflow-wrap: anywhere;
 }
 
-.storage-item__progress [data-slot="progress-track"] {
-  height: var(--space-xs);
-  border-radius: 0;
-  background: var(--color-rule);
-}
-
-.storage-item__progress [data-slot="progress-indicator"] {
-  border-radius: 0;
-  background: var(--color-accent);
-}
-
-.storage-item[data-state="stale"] .storage-item__value {
-  color: var(--color-warning);
-}
-
-.storage-item[data-state="stale"] [data-slot="progress-indicator"] {
-  background: var(--color-warning);
+.storage-item + .storage-item {
+  padding-top: var(--space-lg);
+  border-top: var(--rule-width) solid var(--color-rule);
 }
 
 .storage-item__empty {
@@ -452,62 +425,98 @@ button,
   overflow-wrap: anywhere;
 }
 
-.metric-value__unit {
-  color: var(--color-ink-muted);
-  font-size: var(--text-lg);
-  letter-spacing: -0.025em;
+.metric-card[data-reading="capacity"] {
+  padding: var(--space-lg);
+  gap: var(--space-lg);
 }
 
-.metric-detail-list {
-  display: grid;
-  gap: var(--space-sm);
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  margin: 0;
+.metric-card[data-reading="capacity"] [data-slot="card-header"],
+.metric-card[data-reading="capacity"] [data-slot="card-content"] {
+  padding: 0;
 }
 
-.metric-detail {
+.metric-card[data-reading="capacity"] [data-slot="card-header"] {
   display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: var(--space-2xs);
-}
-
-.metric-detail dt {
-  color: var(--color-ink-muted);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  font-weight: 500;
-  letter-spacing: 0.04em;
-}
-
-.metric-detail dd {
-  margin: 0;
-  color: var(--color-ink);
-  font-size: var(--text-sm);
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-  overflow-wrap: anywhere;
-}
-
-.metric-progress {
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
   gap: var(--space-xs);
 }
 
-.metric-progress [data-slot="progress-label"],
-.metric-progress [data-slot="progress-value"] {
+.metric-card[data-reading="capacity"] [data-slot="card-title"] {
+  font-size: var(--text-md);
+}
+
+.capacity-reading {
+  display: grid;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.capacity-used,
+.capacity-details {
+  margin: 0;
+}
+
+.capacity-details {
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.capacity-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2xs) var(--space-sm);
+}
+
+.capacity-row dt {
+  color: var(--color-ink-muted);
   font-size: var(--text-sm);
 }
 
-.metric-progress [data-slot="progress-track"] {
+.capacity-row dd {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-xs);
+  margin: 0 0 0 auto;
+  color: var(--color-ink);
+  font-family: var(--font-body);
+  font-size: var(--text-base);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.capacity-used dd {
+  font-weight: 600;
+}
+
+.capacity-percentage {
+  color: var(--color-ink-muted);
+}
+
+.capacity-progress [data-slot="progress-track"] {
   height: var(--space-xs);
   border-radius: 0;
   background: var(--color-rule);
 }
 
-.metric-progress [data-slot="progress-indicator"] {
+.capacity-progress [data-slot="progress-indicator"] {
   border-radius: 0;
   background: var(--color-accent);
   transition: transform var(--dur-short) var(--ease-out);
+}
+
+.capacity-reading[data-stale="true"] .capacity-used dd,
+.capacity-reading[data-stale="true"] .capacity-percentage {
+  color: var(--color-warning);
+}
+
+.capacity-reading[data-stale="true"] [data-slot="progress-indicator"] {
+  background: var(--color-warning);
 }
 
 .metric-empty {
@@ -708,7 +717,7 @@ button,
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .metric-progress [data-slot="progress-indicator"] {
+  .capacity-progress [data-slot="progress-indicator"] {
     transition-duration: 150ms;
   }
 }

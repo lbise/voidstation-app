@@ -15,7 +15,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Progress, ProgressLabel, ProgressValue } from "@/components/ui/progress";
+import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Empty,
@@ -290,14 +290,14 @@ function MetricCard({
   icon: ReactNode;
   status: ReadingStatus;
   children: ReactNode;
-  readingKind?: "cpu";
+  readingKind?: "cpu" | "capacity";
 }) {
   return (
     <Card className="metric-card" data-reading={readingKind} data-state={status}>
       <CardHeader>
         <div className="metric-card__title-row">
           {icon}
-          <CardTitle>{title}</CardTitle>
+          <CardTitle><h2>{title}</h2></CardTitle>
         </div>
         <CardAction>
           <StatusBadge status={status} />
@@ -370,36 +370,43 @@ function UnavailableReading({ cause }: { cause: UnavailableCause }) {
   );
 }
 
-function CapacityReading({ label, value }: { label: string; value: DiskSpace }) {
+function CapacityReading({
+  label,
+  value,
+  stale,
+}: {
+  label: string;
+  value: DiskSpace;
+  stale: boolean;
+}) {
+  const percent = formatPercentage(value.used, value.total);
+  const percentage = `${percent.toLocaleString(undefined, { maximumFractionDigits: 1 })}%`;
+
   return (
-    <>
-      <p className="metric-value" aria-live="polite" aria-atomic="true">
-        {formatGiB(value.used)}
-        <span className="metric-value__unit"> used</span>
-      </p>
-      <Progress
-        className="metric-progress"
-        value={formatPercentage(value.used, value.total)}
-        aria-label={`${label} used: ${formatGiB(value.used)} of ${formatGiB(value.total)}`}
-      >
-        <ProgressLabel>{label} used</ProgressLabel>
-        <ProgressValue>{(_, progressValue) => `${Math.round(progressValue ?? 0)}%`}</ProgressValue>
-      </Progress>
-      <dl className="metric-detail-list">
-        <div className="metric-detail">
+    <div className="capacity-reading" role="group" aria-label={`${label} capacity`} data-stale={stale}>
+      <dl className="capacity-used">
+        <div className="capacity-row">
           <dt>Used</dt>
-          <dd>{formatGiB(value.used)}</dd>
+          <dd><span>{formatGiB(value.used)}</span><span className="capacity-percentage">{percentage}</span></dd>
         </div>
-        <div className="metric-detail">
+      </dl>
+      <Progress
+        className="capacity-progress"
+        value={percent}
+        aria-label={`${label} usage${stale ? ", stale reading" : ""}`}
+        aria-valuetext={`${formatGiB(value.used)} of ${formatGiB(value.total)}, ${percentage}`}
+      />
+      <dl className="capacity-details">
+        <div className="capacity-row">
+          <dt>Total capacity</dt>
+          <dd>{formatGiB(value.total)}</dd>
+        </div>
+        <div className="capacity-row">
           <dt>Available</dt>
           <dd>{formatGiB(value.available)}</dd>
         </div>
-        <div className="metric-detail">
-          <dt>Total</dt>
-          <dd>{formatGiB(value.total)}</dd>
-        </div>
       </dl>
-    </>
+    </div>
   );
 }
 
@@ -431,16 +438,7 @@ function StorageItem({
       {status === "loading" ? (
         <Skeleton className="storage-item__skeleton" />
       ) : measurement ? (
-        <>
-          <p className="storage-item__value">
-            {formatGiB(measurement.value.used)} / {formatGiB(measurement.value.total)}
-          </p>
-          <Progress
-            className="storage-item__progress"
-            value={formatPercentage(measurement.value.used, measurement.value.total)}
-            aria-label={`${mount}: ${formatGiB(measurement.value.used)} used of ${formatGiB(measurement.value.total)}`}
-          />
-        </>
+        <CapacityReading label={mount} value={measurement.value} stale={status === "stale"} />
       ) : (
         <p className="storage-item__empty">No measurement</p>
       )}
@@ -462,6 +460,7 @@ function StorageReading({
       title="Storage"
       icon={<HardDrive className="metric-card__icon" aria-hidden="true" />}
       status={storageStatus(root, data, initialLoading)}
+      readingKind="capacity"
     >
       <div className="storage-list">
         <StorageItem
@@ -701,11 +700,12 @@ export function MetricsDashboard() {
           title="RAM"
           icon={<MemoryStick className="metric-card__icon" aria-hidden="true" />}
           status={ramStatus}
+          readingKind="capacity"
         >
           {ramStatus === "loading" ? (
             <LoadingReading label="RAM" />
           ) : ram ? (
-            <CapacityReading label="RAM" value={ram.value} />
+            <CapacityReading label="RAM" value={ram.value} stale={ramStatus === "stale"} />
           ) : (
             <UnavailableReading cause={unavailableCause} />
           )}

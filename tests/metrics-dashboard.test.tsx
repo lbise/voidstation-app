@@ -47,7 +47,7 @@ afterEach(() => {
 });
 
 function cardFor(title: string): HTMLElement {
-  const card = screen.getByText(title, { selector: '[data-slot="card-title"]' }).closest('[data-slot="card"]');
+  const card = screen.getByRole("heading", { name: title, level: 2 }).closest('[data-slot="card"]');
   if (!(card instanceof HTMLElement)) throw new Error(`Missing card for ${title}`);
   return card;
 }
@@ -182,6 +182,64 @@ it("plots successful CPU observations and does not add stale values", async () =
   serve({ ...observations(second), cpu: { ...unavailable, unit: "percent" } });
   await advance();
   expect(chart().querySelector("path")?.getAttribute("d")).toContain("L");
+});
+
+it("uses the same capacity breakdown for RAM and each storage mount", async () => {
+  render(<MetricsDashboard />);
+  await settle();
+
+  for (const [label, used, percent, total, available] of [
+    ["RAM", "5.0 GiB", "62.5%", "8.0 GiB", "3.0 GiB"],
+    ["/", "40.0 GiB", "40%", "100.0 GiB", "50.0 GiB"],
+    ["/data", "700.0 GiB", "70%", "1,000.0 GiB", "300.0 GiB"],
+  ]) {
+    const capacity = within(screen.getByRole("group", { name: `${label} capacity` }));
+    const usedValue = capacity.getByText("Used", { selector: "dt" }).nextElementSibling;
+    expect(usedValue?.textContent).toContain(used);
+    expect(usedValue?.textContent).toContain(percent);
+    expect(capacity.getByText("Total capacity", { selector: "dt" }).nextElementSibling?.textContent).toBe(total);
+    expect(capacity.getByText("Available", { selector: "dt" }).nextElementSibling?.textContent).toBe(available);
+    expect(capacity.getAllByText(used, { exact: true })).toHaveLength(1);
+    expect(capacity.getByRole("progressbar").getAttribute("aria-valuenow")).toBe(percent.replace("%", ""));
+  }
+});
+
+it("retains the complete stale capacity breakdown while other readings refresh", async () => {
+  render(<MetricsDashboard />);
+  await settle();
+
+  const next = observations(SECOND);
+  serve({
+    ...next,
+    ram: { ...unavailable, unit: "bytes" },
+    rootFilesystem: { ...unavailable, unit: "bytes" },
+    dataFilesystem: {
+      status: "available", unit: "bytes", observedAt: SECOND,
+      value: { used: 0, available: 1073741824000, total: 1073741824000 },
+    },
+  });
+  await advance();
+
+  for (const [label, used, available] of [["RAM", "5.0 GiB", "3.0 GiB"], ["/", "40.0 GiB", "50.0 GiB"]]) {
+    const capacity = within(screen.getByRole("group", { name: `${label} capacity` }));
+    expect(capacity.getByText(used)).toBeTruthy();
+    expect(capacity.getByText("Available", { selector: "dt" }).nextElementSibling?.textContent).toBe(available);
+    expect(capacity.getByRole("progressbar", { name: `${label} usage, stale reading` })).toBeTruthy();
+  }
+  const data = within(screen.getByRole("group", { name: "/data capacity" }));
+  expect(data.getByText("0.0 GiB")).toBeTruthy();
+  expect(data.getByText("0%")).toBeTruthy();
+  expect(data.getByRole("progressbar", { name: "/data usage" }).getAttribute("aria-valuenow")).toBe("0");
+});
+
+it("does not invent capacity values for a storage mount that has never succeeded", async () => {
+  serve({ ...observations(), dataFilesystem: { ...unavailable, unit: "bytes" } });
+  render(<MetricsDashboard />);
+  await settle();
+
+  expect(screen.queryByRole("group", { name: "/data capacity" })).toBeNull();
+  expect(within(cardFor("Storage")).getByText("No measurement")).toBeTruthy();
+  expect(screen.getByRole("group", { name: "/ capacity" })).toBeTruthy();
 });
 
 it("returns stale measurements to current after a later request succeeds", async () => {
