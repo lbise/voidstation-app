@@ -63,7 +63,7 @@ it("distinguishes initial loading from measurements that have never succeeded, w
   render(<MetricsDashboard />);
   expect(screen.getAllByText("Loading")).toHaveLength(6);
   expect(screen.queryByText("Unavailable")).toBeNull();
-  expect(screen.queryByText("0%", { selector: ".metric-value" })).toBeNull();
+  expect(screen.queryByText("0%", { selector: "dd" })).toBeNull();
   expect(screen.queryByText(/0\.0 GiB/)).toBeNull();
   expect(screen.queryByText("0 seconds")).toBeNull();
   expect(screen.queryAllByText(/Last updated/)).toHaveLength(0);
@@ -72,7 +72,7 @@ it("distinguishes initial loading from measurements that have never succeeded, w
   expect(screen.queryAllByText("Loading")).toHaveLength(0);
   expect(screen.getAllByText("The Server did not provide this measurement.")).toHaveLength(3);
   expect(screen.getAllByText("No measurement")).toHaveLength(2);
-  expect(screen.queryByText("0%", { selector: ".metric-value" })).toBeNull();
+  expect(screen.queryByText("0%", { selector: "dd" })).toBeNull();
   expect(screen.queryByText(/0\.0 GiB/)).toBeNull();
   expect(screen.queryByText("0 seconds")).toBeNull();
   expect(screen.queryByRole("alert")).toBeNull();
@@ -87,7 +87,7 @@ it("keeps every metric unavailable when the first request fails", async () => {
   expect(screen.getAllByText("The Dashboard could not request this measurement.")).toHaveLength(3);
   expect(screen.getAllByText("No measurement")).toHaveLength(2);
   expect(screen.queryAllByRole("time")).toHaveLength(0);
-  expect(screen.queryByText("0%", { selector: ".metric-value" })).toBeNull();
+  expect(screen.queryByText("0%", { selector: "dd" })).toBeNull();
   expect(screen.queryByText(/0\.0 GiB/)).toBeNull();
 });
 
@@ -182,6 +182,41 @@ it("plots successful CPU observations and does not add stale values", async () =
   serve({ ...observations(second), cpu: { ...unavailable, unit: "percent" } });
   await advance();
   expect(chart().querySelector("path")?.getAttribute("d")).toContain("L");
+});
+
+it("presents CPU and Uptime as labelled readings and retains them after a failed refresh", async () => {
+  render(<MetricsDashboard />);
+  await settle();
+
+  for (const [title, label, value] of [
+    ["CPU", "Utilization", "25%"],
+    ["Uptime", "Since boot", "1 day 1 hour 1 minute"],
+  ]) {
+    const card = within(cardFor(title));
+    expect(card.getByText(label, { selector: "dt" }).nextElementSibling?.textContent).toBe(value);
+  }
+  expect(within(cardFor("CPU")).getByRole("img", { name: /CPU history/ })).toBeTruthy();
+
+  respond = async () => { throw new Error("connection lost"); };
+  await advance();
+  for (const [title, label, value] of [
+    ["CPU", "Utilization", "25%"],
+    ["Uptime", "Since boot", "1 day 1 hour 1 minute"],
+  ]) {
+    const card = within(cardFor(title));
+    expect(card.getByText("Stale reading")).toBeTruthy();
+    expect(card.getByText(label, { selector: "dt" }).nextElementSibling?.textContent).toBe(value);
+  }
+
+  serve({
+    ...observations(THIRD),
+    cpu: { status: "available", value: 0, unit: "percent", observedAt: THIRD },
+    uptime: { status: "available", value: 0, unit: "seconds", observedAt: THIRD },
+  });
+  await advance();
+  expect(within(cardFor("CPU")).getByText("0%", { selector: "dd" })).toBeTruthy();
+  expect(within(cardFor("Uptime")).getByText("0 seconds", { selector: "dd" })).toBeTruthy();
+  expect(screen.queryByText("Stale reading")).toBeNull();
 });
 
 it("uses the same capacity breakdown for RAM and each storage mount", async () => {

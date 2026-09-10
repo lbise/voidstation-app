@@ -290,7 +290,7 @@ function MetricCard({
   icon: ReactNode;
   status: ReadingStatus;
   children: ReactNode;
-  readingKind?: "cpu" | "capacity";
+  readingKind?: "cpu" | "uptime" | "capacity";
 }) {
   return (
     <Card className="metric-card" data-reading={readingKind} data-state={status}>
@@ -308,36 +308,12 @@ function MetricCard({
   );
 }
 
-function UptimeInline({
-  status,
-  value,
-  unavailableCause,
-}: {
-  status: ReadingStatus;
-  value: number | null;
-  unavailableCause: UnavailableCause;
-}) {
+function ScalarReading({ label, value }: { label: string; value: string }) {
   return (
-    <article className="uptime-inline metric-card" data-slot="card" data-state={status}>
-      <header className="uptime-inline__header">
-        <div className="metric-card__title-row">
-          <Clock3 className="metric-card__icon" aria-hidden="true" />
-          <h2 data-slot="card-title">Uptime</h2>
-        </div>
-        <StatusBadge status={status} />
-      </header>
-      <div className="uptime-inline__reading">
-        {status === "loading" ? (
-          <LoadingReading label="uptime" />
-        ) : value !== null ? (
-          <p className="metric-value" aria-live="polite" aria-atomic="true">
-            {formatUptime(value)}
-          </p>
-        ) : (
-          <UnavailableReading cause={unavailableCause} />
-        )}
-      </div>
-    </article>
+    <dl className="reading-row scalar-reading">
+      <dt>{label}</dt>
+      <dd aria-live="polite" aria-atomic="true">{value}</dd>
+    </dl>
   );
 }
 
@@ -385,7 +361,7 @@ function CapacityReading({
   return (
     <div className="capacity-reading" role="group" aria-label={`${label} capacity`} data-stale={stale}>
       <dl className="capacity-used">
-        <div className="capacity-row">
+        <div className="reading-row">
           <dt>Used</dt>
           <dd><span>{formatGiB(value.used)}</span><span className="capacity-percentage">{percentage}</span></dd>
         </div>
@@ -397,11 +373,11 @@ function CapacityReading({
         aria-valuetext={`${formatGiB(value.used)} of ${formatGiB(value.total)}, ${percentage}`}
       />
       <dl className="capacity-details">
-        <div className="capacity-row">
+        <div className="reading-row">
           <dt>Total capacity</dt>
           <dd>{formatGiB(value.total)}</dd>
         </div>
-        <div className="capacity-row">
+        <div className="reading-row">
           <dt>Available</dt>
           <dd>{formatGiB(value.available)}</dd>
         </div>
@@ -664,12 +640,21 @@ export function MetricsDashboard() {
           </AlertDescription>
         </Alert>
       )}
-      <UptimeInline
-        status={uptimeStatus}
-        value={uptime?.value ?? null}
-        unavailableCause={unavailableCause}
-      />
       <div className="metrics-grid">
+        <MetricCard
+          title="Uptime"
+          icon={<Clock3 className="metric-card__icon" aria-hidden="true" />}
+          status={uptimeStatus}
+          readingKind="uptime"
+        >
+          {uptimeStatus === "loading" ? (
+            <LoadingReading label="uptime" />
+          ) : uptime ? (
+            <ScalarReading label="Since boot" value={formatUptime(uptime.value)} />
+          ) : (
+            <UnavailableReading cause={unavailableCause} />
+          )}
+        </MetricCard>
         <MetricCard
           title="CPU"
           icon={<Cpu className="metric-card__icon" aria-hidden="true" />}
@@ -678,9 +663,7 @@ export function MetricsDashboard() {
         >
           {cpuStatus === "loading" && <LoadingReading label="CPU" />}
           {cpu && (
-            <p className="metric-value" aria-live="polite" aria-atomic="true">
-              {formatCpu(cpu.value)}
-            </p>
+            <ScalarReading label="Utilization" value={formatCpu(cpu.value)} />
           )}
           {!cpu && cpuStatus !== "loading" && (
             <UnavailableReading cause={unavailableCause} />
