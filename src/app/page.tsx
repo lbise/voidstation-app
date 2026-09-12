@@ -1,5 +1,6 @@
 import { LayoutDashboard, Server } from "lucide-react";
 
+import { LogoutButton } from "@/components/logout-button";
 import { MetricsDashboard } from "@/components/metrics-dashboard";
 
 export default function Home() {
@@ -20,6 +21,7 @@ export default function Home() {
             Dashboard
           </a>
         </nav>
+        <LogoutButton />
       </aside>
       <main className="dashboard-main">
         <header className="dashboard-page-head">

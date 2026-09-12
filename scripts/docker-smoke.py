@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Compare the deployed HTTP API with local Linux host readings. Never changes Docker."""
+"""Compare authenticated deployed HTTPS metrics with local Linux host readings. Never changes Docker."""
 
 import argparse
 import json
 import os
 import time
+import urllib.parse
 import urllib.request
 
 
@@ -32,10 +33,11 @@ def host_readings(root, data):
     return result
 
 
-def fetch_metrics(url):
-    request = urllib.request.Request(url.rstrip('/') + '/api/metrics',
-                                     headers={'Cache-Control': 'no-store'})
-    # Private-host verification must not travel through a configured HTTP proxy.
+def fetch_metrics(url, session_cookie):
+    request = urllib.request.Request(url.rstrip('/') + '/api/metrics', headers={
+        'Cache-Control': 'no-store', 'Cookie': session_cookie,
+    })
+    # Tailscale-host verification must not travel through a configured HTTP proxy.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     with opener.open(request, timeout=10) as response:
         if 'no-store' not in response.headers.get('Cache-Control', ''):
@@ -45,10 +47,15 @@ def fetch_metrics(url):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('url', help='HTTP origin on this Ubuntu Docker host')
+    parser.add_argument('url', help='HTTPS Tailscale origin on this Ubuntu Docker host')
     parser.add_argument('root', help='Root filesystem probe directory')
     parser.add_argument('data', help='Separate data filesystem probe directory')
     args = parser.parse_args()
+    if urllib.parse.urlparse(args.url).scheme != 'https':
+        parser.error('URL must use https')
+    session_cookie = os.environ.get('VOIDSTATION_SMOKE_COOKIE')
+    if not session_cookie or '=' not in session_cookie:
+        parser.error('set VOIDSTATION_SMOKE_COOKIE to an authenticated name=value session cookie')
     if os.stat(args.root).st_dev != os.stat('/').st_dev:
         parser.error('Root probe is not on the host root filesystem')
     if os.stat(args.data).st_dev == os.stat(args.root).st_dev:
@@ -57,10 +64,10 @@ def main():
     # Use a five-second interval to match normal Dashboard polling. Other viewers
     # can shorten the application's CPU interval; close them for this comparison.
     start = host_readings(args.root, args.data)
-    fetch_metrics(args.url)
+    fetch_metrics(args.url, session_cookie)
     time.sleep(5)
     before = host_readings(args.root, args.data)
-    metrics = fetch_metrics(args.url)
+    metrics = fetch_metrics(args.url, session_cookie)
     after = host_readings(args.root, args.data)
     failures = []
 

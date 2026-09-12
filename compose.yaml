@@ -3,13 +3,32 @@ name: voidstation-app
 x-voidstation:
   expected_data_filesystem_uuid: "${VOIDSTATION_DATA_FILESYSTEM_UUID:?Set VOIDSTATION_DATA_FILESYSTEM_UUID in .env}"
 
+networks:
+  default:
+    name: voidstation-app_default
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: br-voidstation
+
 services:
   dashboard:
     build: .
     restart: unless-stopped
+    user: "1000:1000"
     ports:
-      - "${VOIDSTATION_LAN_BIND_ADDRESS:?Set VOIDSTATION_LAN_BIND_ADDRESS in .env}:${VOIDSTATION_LAN_PORT:?Set VOIDSTATION_LAN_PORT in .env}:3000"
-      - "${VOIDSTATION_TAILSCALE_BIND_ADDRESS:?Set VOIDSTATION_TAILSCALE_BIND_ADDRESS in .env}:${VOIDSTATION_TAILSCALE_PORT:?Set VOIDSTATION_TAILSCALE_PORT in .env}:3000"
+      - "${VOIDSTATION_TAILSCALE_BIND_ADDRESS:?Set VOIDSTATION_TAILSCALE_BIND_ADDRESS in .env}:${VOIDSTATION_PORT:?Set VOIDSTATION_PORT in .env}:3000"
+    environment:
+      # Docker needs a container-wide listener. The host publication remains the
+      # configured Tailscale CGNAT address, never a wildcard or LAN address.
+      HOSTNAME: "0.0.0.0"
+      PORT: "3000"
+      VOIDSTATION_ORIGIN: "${VOIDSTATION_ORIGIN:?Set VOIDSTATION_ORIGIN in .env}"
+      VOIDSTATION_TLS_CERT: "/run/voidstation-tls/cert.pem"
+      VOIDSTATION_TLS_KEY: "/run/voidstation-tls/key.pem"
+      VOIDSTATION_AUTH_DB: "/var/lib/voidstation/auth.sqlite"
+      VOIDSTATION_HOST_PROC: "/host/proc"
+      VOIDSTATION_HOST_ROOT_FS: "/host/filesystems/root"
+      VOIDSTATION_HOST_DATA_FS: "/host/filesystems/data"
     read_only: true
     cap_drop:
       - ALL
@@ -17,9 +36,9 @@ services:
       - no-new-privileges:true
     tmpfs:
       - /tmp:size=16m,noexec,nosuid
-    # Bind one dedicated directory on each selected host filesystem. Do not
-    # replace these with / or a broad host mount.
     volumes:
+      # Keep these five narrow metrics inputs read-only. Do not replace them
+      # with / or a broad host mount.
       - type: bind
         source: /proc/stat
         target: /host/proc/stat
@@ -47,6 +66,17 @@ services:
       - type: bind
         source: "${VOIDSTATION_DATA_FILESYSTEM_PATH:?Set VOIDSTATION_DATA_FILESYSTEM_PATH in .env}"
         target: /host/filesystems/data
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${VOIDSTATION_AUTH_DIRECTORY:?Set VOIDSTATION_AUTH_DIRECTORY in .env}"
+        target: /var/lib/voidstation
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${VOIDSTATION_TLS_DIRECTORY:?Set VOIDSTATION_TLS_DIRECTORY in .env}"
+        target: /run/voidstation-tls
         read_only: true
         bind:
           create_host_path: false

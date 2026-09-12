@@ -637,3 +637,21 @@ button,
     transition-duration: 150ms;
   }
 }
+
+.dashboard-logout {
+  margin-block-start: auto;
+}
+
+.auth-page {
+  display: grid;
+  min-height: 100dvh;
+  place-items: center;
+  padding: var(--space-md);
+}
+
+.auth-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  width: min(100%, 26rem);
+}

@@ -14,4 +14,6 @@ printf 'Preflight passed. Building the dashboard image.\n'
 docker compose --project-name voidstation-app build dashboard
 node scripts/deployment-preflight.mjs
 printf 'Preflight passed. Starting the dashboard.\n'
-exec docker compose --project-name voidstation-app up --no-build -d --no-deps dashboard
+docker compose --project-name voidstation-app up --no-build -d --no-deps dashboard
+node scripts/deployment-preflight.mjs --postdeploy
+printf 'Dashboard passed post-deploy inspection.\n'

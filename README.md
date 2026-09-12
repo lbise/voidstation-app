@@ -1,16 +1,22 @@
 # Voidstation
 
-A read-only Dashboard for Server CPU, RAM, Disk space, and Uptime. Both users see the same readings without application login. This implements [issue #3](https://github.com/lbise/voidstation-app/issues/3), building on [issue #2](https://github.com/lbise/voidstation-app/issues/2).
+A private Dashboard for Server CPU, RAM, Disk space, and Uptime. One local owner account protects all pages and measurements. [Issue #7](https://github.com/lbise/voidstation-app/issues/7) replaces the earlier unauthenticated LAN access policy. No model provider is required.
 
 ## Local development
 
-Use Node.js 24 and npm. No database, credentials, or private Server connection is needed.
+Use Node.js 24 and npm. Local development needs a disposable owner account, not a private Server connection or provider credentials. Keep its database outside the repository.
 
 ```sh
 npm ci
+install -d -m 700 /tmp/voidstation-dev-auth
+export VOIDSTATION_AUTH_DB=/tmp/voidstation-dev-auth/auth.sqlite
+export VOIDSTATION_ORIGIN=https://localhost:3000
+npm run owner -- bootstrap
 npm run dev
-# Open http://127.0.0.1:3000
+# Open https://localhost:3000 and trust the local development certificate.
 ```
+
+The password prompt does not echo input. Run `npm run owner -- recover` to replace the password and invalidate every session. Use a password of at least 12 characters. There is no registration or user-management UI. Production uses a dedicated persistent state directory and Tailscale-issued TLS certificates, not development certificates.
 
 On Linux, the application reads this machine's `/proc/uptime` and `/proc/meminfo`. Other operating systems show unavailable measurements unless supplied with Linux-format source files. Local readings describe the development machine, not the home Server.
 
@@ -20,14 +26,14 @@ npm run test:unit          # Fast deterministic host-metrics tests
 npm run test:http          # Production build, then real HTTP integration test
 npm test                   # Production build, then the full Vitest suite
 npm run build             # Standalone production build only
-npm start                 # Serve the production build on 127.0.0.1:3000
+npm start                 # TLS-only production server; requires TLS cert/key and origin env
 ```
 
-GitHub Actions runs installation, type checking, and `npm test`. The HTTP test starts a real Next.js production server on a temporary loopback port, reads temporary Linux-format files through the production adapter, and removes its files/process afterward. It asserts values, observation timestamps, partial failure, recovery, caching headers, and rejection of writes. It does not mock the endpoint or require private-network access.
+GitHub Actions runs installation, type checking, and `npm test`. The HTTP test starts the real TLS-only production server on a temporary loopback port with a temporary trusted certificate and owner database. It exercises protected pages, metrics, login, logout, throttling, recovery, and origin rejection, alongside measurement regressions. It removes its files and process afterward. OpenSSL is required. No private-network access is needed.
 
 ## Measurements and the HTTP contract
 
-`GET /api/metrics` uses the Node.js runtime. Responses carry `Cache-Control: no-store`; Next.js route caching and browser fetch caching are also disabled. Partial or total collection failure still returns HTTP 200 with per-metric status. Unsupported write methods return HTTP 405.
+`GET /api/metrics` requires a valid owner session and uses the Node.js runtime. Unauthenticated requests return HTTP 401 without readings. Responses carry `Cache-Control: no-store`; Next.js route caching and browser fetch caching are also disabled. Partial or total collection failure still returns HTTP 200 with per-metric status. Authenticated unsupported writes with a valid Origin return HTTP 405; mutations without the exact application Origin return HTTP 403.
 
 ```json
 {
@@ -80,15 +86,15 @@ An unavailable measurement has `status: "unavailable"`, `value: null`, `observed
 
 ## Docker package
 
-Follow [the deployment runbook](docs/deployment.md) to configure the ignored `.env`, verify filesystem identities, and publish on explicit LAN and Tailscale IPv4 addresses. There is no automatic address selection or wildcard fallback.
+Follow [the deployment runbook](docs/deployment.md) to configure the ignored `.env`, bootstrap the owner account, provision Tailscale HTTPS certificates, and verify filesystem identities. Publish only HTTPS on an explicit Tailscale IPv4 address. Tailscale clients are required at home and away. There is no LAN binding, HTTP backend, public registration, or Funnel.
 
 ```sh
-npm run docker:check      # Validate local addresses, mounts, and port availability
+npm run docker:check      # Validate TLS, Tailscale, container restrictions, mounts, and ports
 npm run docker:up        # Build, recheck, and update only the Dashboard
 npm run docker:logs
 ```
 
-Both publications target container port 3000. Set `VOIDSTATION_LAN_PORT` and `VOIDSTATION_TAILSCALE_PORT` to the same free host port, or choose separate free ports. Existing Dashboard bindings are permitted during updates; unrelated port owners are not displaced.
+The single Tailscale publication targets container port 3000, which accepts TLS only. A preflight-verified DOCKER-USER rule blocks non-Tailscale ingress to the dedicated `br-voidstation` bridge. The owner must authorize and persist that rule before deployment. A Tailscale destination address alone does not prevent routed LAN access. Choose a free HTTPS host port. Existing Dashboard bindings are permitted during updates; unrelated port owners are not displaced. See the runbook for the separately authorized cutover from the old two-port deployment.
 
 The image runs as the unprivileged `node` user. Compose drops capabilities, prevents gaining new privileges, uses a read-only root filesystem, and binds only the required narrow read-only inputs:
 
@@ -104,9 +110,15 @@ Set the two filesystem variables to dedicated existing empty directories on the 
 
 `restart: unless-stopped` restarts the container after crashes and Docker daemon restarts, provided the daemon starts at boot. A manually stopped container stays stopped. No reboot is needed to build or test this package.
 
-Never expose this unauthenticated application publicly. Specific Docker bindings do not restrict source addresses or rule out router forwarding. Do not assume host firewall defaults restrict Docker-published ports. Docker Desktop measures its Linux VM, not a macOS or Windows host. See [deployment verification](docs/verification/issue-5.md) for host comparisons, crash recovery, and network verification limits.
+Do not expose Voidstation publicly or enable Tailscale Funnel. Do not assume host firewall defaults restrict Docker-published ports. Docker Desktop measures its Linux VM, not a macOS or Windows host. Earlier [issue #5 evidence](docs/verification/issue-5.md) describes the superseded deployment, not proof of this release's secure publication.
 
-HTTP is unencrypted on a direct LAN connection. Tailscale encrypts traffic carried through its network. Anyone allowed network access sees the same metrics. Authentication and HTTPS are outside this release; revisit authentication before adding server controls or sensitive information.
+## Authentication boundary
+
+`src/proxy.ts` denies access by default, including future Assistant pages, API routes, RSC requests, and public files. Only login, its POST endpoint, and an asset allowlist generated from the login build are public. The metrics handler also validates its session before collecting Server measurements. The TLS launcher rejects unexpected Host headers and ignores forwarded identity and protocol headers.
+
+Sessions are opaque random tokens in `__Host-voidstation-session`, with Secure, HttpOnly, SameSite=Strict, and an eight-hour lifetime. The private SQLite database stores token hashes, a salted scrypt password hash, and a persistent owner-wide login limiter. It contains no model-provider credentials. Five sign-in attempts per rolling 15-minute window bound password hashing, including concurrent attempts. Changing IP or forwarding headers cannot reset that limit. Administrative recovery resets the limiter and invalidates all sessions, including sessions in other running application processes sharing the database.
+
+All mutations require the exact configured HTTPS Origin, including login and logout. Cross-site and same-site-but-other-origin requests fail; missing Origin fails too. No HTTP-to-HTTPS redirect listener exists. Never use `next start` as a production shortcut.
 
 ## Browser verification
 
@@ -116,11 +128,11 @@ Agent-browser is a development dependency, not application runtime code. Install
 npx agent-browser install
 # Start npm run dev in another terminal.
 export AGENT_BROWSER_SESSION="$(npx agent-browser session id --scope worktree --prefix voidstation)"
-npx agent-browser open http://127.0.0.1:3000
+npx agent-browser --ignore-https-errors open https://localhost:3000
 npx agent-browser set viewport 375 812
 npx agent-browser snapshot
 npx agent-browser screenshot artifacts/dashboard-mobile.png
 npx agent-browser close
 ```
 
-See `docs/verification/issue-2.md` for the agent-run checks and limitations. These are not an automated screenshot regression suite; repeatable coverage comes from Vitest and the HTTP test.
+See `docs/verification/issue-7.md` for login/logout and Dashboard checks and deployment limits. These are not an automated screenshot regression suite; repeatable coverage comes from Vitest and the production HTTPS test. Use `--ignore-https-errors` only with disposable local test certificates.

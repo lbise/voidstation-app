@@ -1,25 +1,65 @@
-# Private Server deployment
+# Tailscale HTTPS deployment
 
-Run these commands on the Ubuntu Server using a user allowed to run Docker. Docker Desktop and remote Docker contexts are not supported by the deployment helper. Requirements are Docker Engine with Compose, Node.js 24, Python 3, `findmnt`, and `ip`. CI does not deploy to the Server.
+Run these commands on the Ubuntu Server as host UID 1000, or with `sudo`, using the local Docker socket. This deployment needs Docker Engine with its iptables firewall backend, Compose, Node.js 24, Python 3, `findmnt`, `ss`, `openssl`, `setpriv`, and Tailscale. Preflight uses read-only privileged checks through `sudo -n`; run `sudo -v` in the owner's terminal first. Docker's native nftables backend is not supported by these ingress checks. It does not use Docker Desktop, a remote Docker context, a reverse proxy, Tailscale Serve, or Funnel.
 
-## Configure once
+Voidstation listens only with TLS. Docker publishes one TCP port from the Server's assigned Tailscale CGNAT IPv4 address to container port 3000. There is no LAN binding, wildcard binding, HTTP listener, or HTTP-to-HTTPS redirect. Plain HTTP to either the published address or the container IP gets no HTTP response. Network access does not replace application login. A checked DOCKER-USER rule, not the destination-address binding alone, rejects non-Tailscale ingress to Voidstation's dedicated bridge.
 
-Copy `.env.example` to the ignored `.env` and fill in the intended LAN IPv4 address, Tailscale IPv4 address, free port, two probe directories, and expected data filesystem UUID. Never commit `.env` or paste its contents into GitHub issues. Addresses are explicit, not guessed from a default route. The helper accepts private LAN addresses and Tailscale's IPv4 range, and requires both addresses to exist on this Server.
+## Configure the host
 
-Before creating directories, identify the intended filesystems:
+Copy `.env.example` to the ignored `.env`. Set `VOIDSTATION_TAILSCALE_BIND_ADDRESS` to an address reported for this Server by `tailscale status --json`. Set `VOIDSTATION_ORIGIN` to `https://` plus this Server's `Self.DNSName`, lowercase and without the trailing DNS dot. Add `:VOIDSTATION_PORT` unless the port is 443. Do not add a trailing slash or guess either value.
+
+Keep the two existing empty metrics probe directories. The root probe must be on `/`; the data probe must be on the configured separate filesystem and match its UUID. They remain read-only container inputs.
+
+Create the dedicated authentication directory before first bootstrap. It holds `auth.sqlite`, so it must be writable by the unprivileged container and must not contain unrelated data.
 
 ```sh
-findmnt -o TARGET,SOURCE,FSTYPE,UUID,MAJ:MIN /
-findmnt -o TARGET,SOURCE,FSTYPE,UUID,MAJ:MIN /path/to/data/mount
+sudo install -d -o 1000 -g 1000 -m 0700 /var/lib/voidstation/auth
 ```
 
-Confirm the data mount is actually mounted and note its UUID. Create one dedicated empty directory on each filesystem, readable and searchable by container UID/GID 1000. For example, use mode 0755 with no files inside. Do not create a data probe while its filesystem is absent. Do not use `/`, a mount root, a directory containing user files, or a symlink as a probe.
+Create a dedicated TLS directory. The container reads it, but cannot write it. Generate the certificate as the Tailscale node owner, then install copies owned by container UID 1000. Replace the hostname with the exact hostname in `VOIDSTATION_ORIGIN`, without its port.
 
-The preflight compares the root probe's device with `/`, checks the data probe against the configured UUID, and rejects a data probe on the root filesystem. This catches a missing data mount that leaves a directory on the root filesystem. It also refuses missing, nonempty, or redirected probe directories. Compose never creates missing bind sources. If access fails, fix the narrow source's permissions or report the blocker. Do not add container root, privileged mode, the Docker socket, or an entire host filesystem mount.
+```sh
+sudo install -d -o 1000 -g 1000 -m 0700 /var/lib/voidstation/tls
+sudo tailscale cert \
+  --cert-file /var/lib/voidstation/tls/cert.pem \
+  --key-file /var/lib/voidstation/tls/key.pem \
+  name.tailnet.ts.net
+sudo chown 1000:1000 /var/lib/voidstation/tls/cert.pem /var/lib/voidstation/tls/key.pem
+sudo chmod 0644 /var/lib/voidstation/tls/cert.pem
+sudo chmod 0600 /var/lib/voidstation/tls/key.pem
+```
 
-Reserve stable LAN addressing through your existing network administration process. Tailscale must already be running and authorized. This deployment does not reconfigure either service.
+The host TLS directory is persistent. The container mounts it read-only at `/run/voidstation-tls`. Renew before expiry with the same `tailscale cert` and ownership commands. Then run preflight and explicitly recreate only the Dashboard; an unchanged image might otherwise keep the old certificate in memory:
 
-## Start or update
+```sh
+npm run docker:check
+docker compose --project-name voidstation-app up -d --no-deps --no-build --force-recreate dashboard
+node scripts/deployment-preflight.mjs --postdeploy
+```
+
+Certificate authorization, renewal scheduling, ACLs, and MagicDNS are owner actions. Never enable Funnel or add a public reverse proxy. Do not reboot the Server or stop unrelated containers.
+
+## Owner-authorized ingress and cutover
+
+Do not run this section without separate authorization for the live access cutover. A LAN peer can route to a Tailscale destination address without using Tailscale. Docker publication alone therefore does not meet the access policy.
+
+The dedicated Docker bridge is named `br-voidstation`. Before starting this release, the owner must install this rule as the first DOCKER-USER rule. It blocks new connections to this bridge unless they arrive through `tailscale0`, including direct container-IP connections. Return traffic for application-initiated connections is unaffected. The rule targets only Voidstation's bridge.
+
+```sh
+sudo iptables -S FORWARD
+sudo iptables -S DOCKER-USER
+# Inspect existing rules first. After authorization:
+sudo iptables -I DOCKER-USER 1 ! -i tailscale0 -o br-voidstation \
+  -m conntrack --ctstate NEW -j DROP
+```
+
+The first FORWARD rule must jump to DOCKER-USER. If another rule runs before it, ask the host administrator to resolve the ordering; do not flush chains or reorder unrelated rules. Preflight verifies both first rules and refuses deployment when either is absent. Only the standard `tailscale0` interface and this dedicated bridge are supported.
+
+The owner must persist this rule through the existing host firewall administration and restore it **before Docker starts containers at boot**. A missing or late rule leaves an access gap. Confirm Docker restart/startup ordering and repeat the rule checks without rebooting the Server. The helper never changes firewall rules and does not assume UFW or Docker defaults protect published ports.
+
+For the previous LAN release, remove its Dashboard container before starting this release. The old default network must also be recreated to obtain the named bridge. Inspect `docker network inspect voidstation-app_default` first; if it contains any unrelated container, stop and resolve that conflict with its owner. After separate cutover authorization, stop/remove only the old Dashboard, remove its now-empty network, and run `npm run docker:up`. Never leave the old unauthenticated instance running as a fallback. Rollbacks must retain the login/HTTPS/ingress boundary; do not restore the old LAN publication.
+
+## Check and deploy
 
 ```sh
 npm ci
@@ -29,73 +69,87 @@ npm run docker:up
 npm run docker:logs
 ```
 
-`docker:up` validates configuration, builds the image, then rechecks filesystem identity and both ports immediately before updating only `dashboard`. It permits this Compose project's existing Dashboard bindings during an update, but refuses unrelated Docker publications and native listeners. Port 3000 is a suggestion, not an assumption. Inspect `ss -ltn` and `docker ps` when a conflict is reported. Choose a free port rather than stopping its owner.
+`docker:check` reads Compose, Docker, Tailscale status, certificate metadata, firewall rules, and filesystem metadata. It also checks mounted inputs as UID/GID 1000 with supplementary groups cleared, so root's permissions cannot hide an access failure. It does not create directories, obtain a certificate, alter Tailscale, or displace a service. It rejects a remote Docker context, a non-Tailscale publication, wildcard or LAN publication, another service, unsafe Compose overrides, extra mounts, root execution, capabilities, privilege escalation, changed listener/origin/auth paths, a mismatched hostname, invalid or mismatched certificate/key, Funnel, missing probes, or a conflicting port.
 
-For updates, first fetch and select the intended Git revision, then repeat the commands above. Do not use `git reset --hard` on a working tree with local changes. Only Voidstation is recreated. Keep the previous image/revision until verification passes. To roll back, select that revision and repeat its documented deployment procedure, keeping `.env` private.
+`docker:up` runs preflight before and after the image build. It updates only `dashboard`, then inspects its container configuration and waits up to 30 seconds for a running process and a certificate-verified HTTPS login response. Keep the prior secure revision/image until verification passes. A failed postdeploy check requires owner investigation; it is not a reason to weaken TLS or mount permissions. Do not use `git reset --hard` over local work.
 
-The image runs as UID/GID 1000, drops all capabilities, has a read-only root filesystem, and prevents new privileges. Its five read-only host mounts are `/proc/stat`, `/proc/uptime`, `/proc/meminfo`, and the two empty capacity probes. `/tmp` is a size-limited tmpfs. The adapter uses only the fixed container paths and does not fall back to container metrics when a source fails.
+## Bootstrap and recovery
 
-## Inspect actual exposure
-
-Resolve the local values from `.env` when replacing placeholders below. Do not publish the resulting Docker inspection output without removing private deployment details.
+After the first successful deployment, create the sole local owner account from an interactive terminal. The command hides password input by default.
 
 ```sh
-cid=$(docker compose ps -q dashboard)
+docker compose --project-name voidstation-app run --rm --no-deps dashboard \
+  node scripts/owner.ts bootstrap
+```
+
+If a password must come from an approved secret handoff, use standard input. Do not put it in shell history, `.env`, Compose, or a process argument.
+
+```sh
+printf '%s' "$NEW_OWNER_PASSWORD" | docker compose --project-name voidstation-app run --rm --no-deps dashboard \
+  node scripts/owner.ts bootstrap --password-stdin
+```
+
+Administrative recovery resets the owner password and invalidates every application session:
+
+```sh
+docker compose --project-name voidstation-app run --rm --no-deps dashboard \
+  node scripts/owner.ts recover
+# or: printf '%s' "$NEW_OWNER_PASSWORD" | docker compose --project-name voidstation-app run --rm --no-deps dashboard \
+#   node scripts/owner.ts recover --password-stdin
+```
+
+The `bootstrap` and `recover [--password-stdin]` commands use `VOIDSTATION_AUTH_DB`, which Compose fixes at `/var/lib/voidstation/auth.sqlite`. Do not override that path.
+
+## Verify exposure and HTTPS
+
+Use a Tailscale peer to open `VOIDSTATION_ORIGIN`, sign in, and verify the Dashboard. For a local TLS check that does not depend on name resolution, replace the placeholders with values from `.env`:
+
+```sh
+curl --noproxy '*' --resolve name.tailnet.ts.net:PORT:TAILSCALE_IP \
+  --fail https://name.tailnet.ts.net:PORT/login
+if curl --noproxy '*' --max-time 5 http://TAILSCALE_IP:PORT/; then
+  echo 'Unsafe: plaintext HTTP returned a response' >&2
+  exit 1
+fi
+```
+
+The first request should negotiate the certificate for the Tailscale name and return the login page. The second must not receive an HTTP response because the published port speaks TLS only. Do not use `-k` for the certificate check.
+
+Inspect the actual Docker publication and hardening:
+
+```sh
+cid=$(docker compose --project-name voidstation-app ps -q dashboard)
 docker inspect "$cid" --format '{{json .NetworkSettings.Ports}}'
-docker inspect "$cid" --format '{{json .HostConfig.PortBindings}}'
-docker port "$cid"
+docker inspect "$cid" --format '{{.Config.User}} {{json .HostConfig.CapDrop}} {{json .HostConfig.SecurityOpt}} {{json .Mounts}}'
 ss -ltn
-curl --noproxy '*' --fail http://LAN_ADDRESS:PORT/api/metrics
-curl --noproxy '*' --fail http://TAILSCALE_ADDRESS:PORT/api/metrics
 ```
 
-There must be exactly two IPv4 publications for container port 3000, on the configured addresses. No `0.0.0.0`, `::`, unexpected address, or extra publication is acceptable. Container-internal `HOSTNAME=0.0.0.0` is needed to serve Docker's bridge and is not a host wildcard publication. Inspect the container's mounts, user, capabilities, and security options too:
+There must be exactly one `3000/tcp` publication, on the configured `100.64.0.0/10` address and configured port. It must not show `0.0.0.0`, `::`, a LAN address, or another publication. The container uses `HOSTNAME=0.0.0.0` only inside Docker so its bridge publication works. The launcher defaults to loopback when Compose does not set `HOSTNAME`.
+
+The image runs as UID/GID 1000 with all capabilities dropped, no-new-privileges, a read-only root filesystem, a restricted `/tmp` tmpfs, five unchanged read-only metrics mounts, a writable UID-1000 auth bind, and a read-only TLS bind.
+
+From a separate LAN client without Tailscale, verify even a request routed to the Tailscale address with the correct HTTPS hostname cannot connect. From an authorized Tailscale peer, verify that it can. Inspect the DOCKER-USER rule counters to confirm which rule handles the refused attempt. The Docker host administrator remains trusted; local host processes can access container networks.
+
+Preflight cannot prove router forwarding, UPnP, tailnet ACL policy, DNS resolution from another peer, physical network reachability, or that no owner later enables Funnel. The owner must separately authorize any cutover and verify from an off-LAN Tailscale device that the HTTPS origin works and that no public forwarding path exists. Record unavailable checks instead of assuming a firewall protects Docker-published ports.
+
+## Authenticated metrics smoke check
+
+Metrics now require a session. `scripts/docker-smoke.py` accepts a session cookie through `VOIDSTATION_SMOKE_COOKIE`; it never logs the cookie. Supply the full `name=value` cookie from an approved local test session, then run the check against the HTTPS origin.
 
 ```sh
-docker inspect "$cid" --format '{{.Config.User}} {{json .HostConfig}} {{json .Mounts}}'
+VOIDSTATION_SMOKE_COOKIE='session=value' \
+  python3 scripts/docker-smoke.py https://name.tailnet.ts.net:PORT ROOT_PROBE DATA_PROBE
 ```
 
-Docker can bypass host firewall rules for published ports. Specific destination-address bindings are not source-address access controls. Do not claim private-only exposure from these local checks. From a separate LAN device, open the LAN URL. From a permitted Tailscale peer, preferably off the LAN, open the Tailscale URL. Record the vantage point and result for each. A Tailscale ping alone does not prove HTTP reachability.
+The script disables proxy use and performs the same independent host comparison as the prior deployment check. Keep raw output under ignored `artifacts/`. Do not commit cookies, IP addresses, certificate paths, UUIDs, or auth data.
 
-The owner must confirm there is no router port forwarding, UPnP mapping, Tailscale Funnel, reverse proxy, or other forwarding path exposing this port publicly. Inspect Docker forwarding rules with an authorized administrator if needed. Do not change existing firewall or network services as part of verification. Record any unavailable access rather than assuming firewall defaults protect Docker.
+## Local HTTPS launcher
 
-Direct LAN HTTP is unencrypted. Tailscale encrypts traffic carried through Tailscale. Anyone allowed network access sees the same read-only metrics without an account. Public exposure, HTTPS, and application login remain out of scope.
-
-## Compare host measurements
-
-Close other Dashboard tabs during the CPU comparison because each request advances the shared CPU sample. Run on the Server, not inside the container:
+For local launcher tests, build first and provide a disposable certificate and key. The launcher binds `127.0.0.1` by default, which is intentional for local tests. Set a loopback `HOSTNAME` only when needed. It always needs an HTTPS `VOIDSTATION_ORIGIN`, `VOIDSTATION_TLS_CERT`, and `VOIDSTATION_TLS_KEY`.
 
 ```sh
-mkdir -p artifacts/issue-5
-python3 scripts/docker-smoke.py http://LAN_ADDRESS:PORT ROOT_PROBE DATA_PROBE \
-  > artifacts/issue-5/smoke.json
+npm run build
+VOIDSTATION_ORIGIN=https://voidstation.test-tailnet.ts.net:3443 \
+VOIDSTATION_TLS_CERT=/tmp/cert.pem VOIDSTATION_TLS_KEY=/tmp/key.pem PORT=3443 \
+node scripts/https-server.mjs
 ```
-
-The script reads Ubuntu `/proc` and `statvfs` independently of the application, samples the real HTTP endpoint five seconds apart, and fails on unavailable or mismatched readings. It requires exact RAM and filesystem totals. Uptime must be within one second of the host sample bracket; CPU within five percentage points. RAM used/available allow the greater of 64 MiB or 1% of total, and filesystem used/available allow the greater of 16 MiB or 0.001% of total for concurrent workloads. Review discrepancies instead of widening tolerances blindly. Filesystem free and unprivileged available blocks differ because of reserved space.
-
-To rule out container-only readings, inspect the exact read-only proc mounts and compare the API Uptime with both host boot time and container start time. Compare host totals with container cgroup limits, not only container `/proc`, which can itself show host values. A disposable copy of this image with the same narrow mounts, a 256 MiB memory limit, and a half-CPU quota can provide stronger evidence: run the smoke check against a free loopback-only port and confirm it still reports host totals and host-wide CPU. Remove only that disposable container afterward. Never apply the experimental limits to unrelated workloads.
-
-## Crash recovery and boot startup
-
-Compose uses `restart: unless-stopped`. A manually stopped container stays stopped under that policy. Wait until the container has been running at least ten seconds before testing crash recovery. Kill Node inside this application, not with `docker stop` or `docker kill`, which represent an intentional Docker stop:
-
-```sh
-cid=$(docker compose ps -q dashboard)
-docker inspect "$cid" --format '{{.RestartCount}} {{.State.StartedAt}}'
-app_pid=$(docker top "$cid" -eo pid | tail -n 1 | tr -d ' ')
-kill -KILL "$app_pid"
-# Wait for restart, then repeat the HTTP smoke check.
-docker inspect "$cid" --format '{{.RestartCount}} {{.State.StartedAt}}'
-systemctl is-enabled docker tailscaled
-systemctl is-active docker tailscaled
-```
-
-The `kill` targets the application PID reported by this container only. Run it as the Docker/container owner. The container drops `CAP_KILL`, so an in-container signal may not be permitted; do not add a capability just for this check.
-
-Do not reboot the Server or restart Docker or Tailscale to test boot behavior. Inspect that Docker is enabled and active instead. Docker may race address or filesystem availability during boot; if that happens, the owner must add an ordered startup unit through the normal host administration process. This release does not add a host service or change boot ordering.
-
-After startup and crash testing, compare unrelated container IDs, start times, and restart counts with a pre-deployment inventory. A brief interval while Voidstation is recreated is expected; unrelated workloads must remain running.
-
-## Evidence
-
-Record the Git revision, Ubuntu and Docker versions, port recheck, filesystem identity checks, security inspection, host/API comparisons, crash recovery, boot configuration, unrelated workload continuity, and LAN/Tailscale vantage points. Keep raw files under ignored `artifacts/issue-5/` and commit a summary without private addresses or UUIDs. See [issue #5 verification](verification/issue-5.md) for this deployment's results and remaining checks.

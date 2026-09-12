@@ -489,6 +489,11 @@ export function MetricsDashboard() {
           headers: { "Cache-Control": "no-store" },
           signal: controller.signal,
         });
+        if (response.status === 401 && !disposed) {
+          setMetrics(initialState);
+          window.location.replace("/login");
+          return;
+        }
         if (!response.ok) {
           throw new Error(`Metrics request failed with ${response.status}`);
         }
