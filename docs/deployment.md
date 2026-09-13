@@ -16,20 +16,17 @@ Create the dedicated authentication directory before first bootstrap. It holds `
 sudo install -d -o 1000 -g 1000 -m 0700 /var/lib/voidstation/auth
 ```
 
-Create a dedicated TLS directory. The container reads it, but cannot write it. Generate the certificate as the Tailscale node owner, then install copies owned by container UID 1000. Replace the hostname with the exact hostname in `VOIDSTATION_ORIGIN`, without its port.
+Provision the certificate through the reviewed host helper. Replace the hostname with the exact hostname in `VOIDSTATION_ORIGIN`, without its scheme or port. The helper validates the hostname, expiry, and key pair before installing them. Initial provisioning does not restart an existing Dashboard or perform a live cutover.
 
 ```sh
-sudo install -d -o 1000 -g 1000 -m 0700 /var/lib/voidstation/tls
-sudo tailscale cert \
-  --cert-file /var/lib/voidstation/tls/cert.pem \
-  --key-file /var/lib/voidstation/tls/key.pem \
-  name.tailnet.ts.net
-sudo chown 1000:1000 /var/lib/voidstation/tls/cert.pem /var/lib/voidstation/tls/key.pem
-sudo chmod 0644 /var/lib/voidstation/tls/cert.pem
-sudo chmod 0600 /var/lib/voidstation/tls/key.pem
+sudo install -d -o root -g root -m 0755 /usr/local/libexec
+sudo install -o root -g root -m 0755 scripts/host/voidstation-renew-certificate.sh /usr/local/libexec/voidstation-renew-certificate
+sudo /usr/local/libexec/voidstation-renew-certificate --provision name.tailnet.ts.net
 ```
 
-The host TLS directory is persistent. The container mounts it read-only at `/run/voidstation-tls`. Renew before expiry with the same `tailscale cert` and ownership commands. Then run preflight and explicitly recreate only the Dashboard; an unchanged image might otherwise keep the old certificate in memory:
+The TLS directory uses root ownership, group 1000, and mode 0750. Its private key belongs to UID/GID 1000 with mode 0600. The container can read the key through its read-only bind but cannot write it. Other local users cannot list the directory.
+
+The host TLS directory is persistent. The container mounts it read-only at `/run/voidstation-tls`. The renewal timer below reloads changed certificates by restarting only the Dashboard. If certificates are replaced manually outside that helper, run preflight and explicitly recreate only the Dashboard; an unchanged image might otherwise keep the old certificate in memory:
 
 ```sh
 npm run docker:check
@@ -37,7 +34,11 @@ docker compose --project-name voidstation-app up -d --no-deps --no-build --force
 node scripts/deployment-preflight.mjs --postdeploy
 ```
 
-Certificate authorization, renewal scheduling, ACLs, and MagicDNS are owner actions. Never enable Funnel or add a public reverse proxy. Do not reboot the Server or stop unrelated containers.
+Provisioning records the exact hostname in `/etc/voidstation/hostname`, owned and readable only by root. The installed renewal service explicitly selects this configuration and `/var/lib/voidstation/tls`; preflight checks that its target matches the application.
+
+The host-support installation below enables daily renewal checks. The helper keeps the current certificate until a replacement has passed hostname, validity, and key-pair checks. It restarts only the running container with this project's Dashboard labels when a certificate changes. A valid certificate outside the renewal window causes no container restart unless an earlier restart remains pending. The helper records that obligation before replacing files and retries it after a failed restart. It serializes timer and manual execution with `flock`. Inspect status with `systemctl status voidstation-certificate-renewal.timer` and `journalctl -u voidstation-certificate-renewal.service`.
+
+Certificate authorization, the renewal timer, ACLs, and MagicDNS remain owner-controlled. Never enable Funnel or add a public reverse proxy. Do not reboot the Server or stop unrelated containers.
 
 ## Owner-authorized ingress and cutover
 
@@ -55,7 +56,25 @@ sudo iptables -I DOCKER-USER 1 ! -i tailscale0 -o br-voidstation \
 
 The first FORWARD rule must jump to DOCKER-USER. If another rule runs before it, ask the host administrator to resolve the ordering; do not flush chains or reorder unrelated rules. Preflight verifies both first rules and refuses deployment when either is absent. Only the standard `tailscale0` interface and this dedicated bridge are supported.
 
-The owner must persist this rule through the existing host firewall administration and restore it **before Docker starts containers at boot**. A missing or late rule leaves an access gap. Confirm Docker restart/startup ordering and repeat the rule checks without rebooting the Server. The helper never changes firewall rules and does not assume UFW or Docker defaults protect published ports.
+The rule must load **before Docker starts containers at boot**. The repository supplies a root-owned oneshot unit for this, rather than enabling UFW or changing its configuration. The unit installs only the Voidstation rule and is required before Docker startup. It participates in Docker restarts so the rule is checked again.
+
+This dependency affects Docker startup: if the rule cannot load, Docker will not start until the failure is fixed. Obtain the owner's explicit approval for that tradeoff. Installing the unit does not restart a running Docker daemon or its containers. Do not disable the dependency to work around a failure while Voidstation can auto-start.
+
+Install the reviewed scripts and units as root-owned copies. Root services must not execute scripts from the writable checkout:
+
+```sh
+sudo install -d -o root -g root -m 0755 /usr/local/libexec
+sudo install -o root -g root -m 0755 scripts/host/voidstation-ingress.sh /usr/local/libexec/voidstation-ingress
+sudo install -o root -g root -m 0755 scripts/host/voidstation-renew-certificate.sh /usr/local/libexec/voidstation-renew-certificate
+sudo install -o root -g root -m 0644 deploy/voidstation-ingress.service /etc/systemd/system/
+sudo install -o root -g root -m 0644 deploy/voidstation-certificate-renewal.service /etc/systemd/system/
+sudo install -o root -g root -m 0644 deploy/voidstation-certificate-renewal.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable voidstation-ingress.service voidstation-certificate-renewal.timer
+sudo systemctl start voidstation-ingress.service voidstation-certificate-renewal.timer
+```
+
+Before installing the rule, verify that no unrelated network uses the `br-voidstation` interface name. The ingress helper refuses unexpected existing FORWARD ordering rather than reordering unrelated rules. It never flushes a chain, deletes a rule, or changes UFW. Preflight checks the active rules, the enabled startup dependency, and the renewal timer. Inspect boot ordering without rebooting the Server.
 
 For the previous LAN release, remove its Dashboard container before starting this release. The old default network must also be recreated to obtain the named bridge. Inspect `docker network inspect voidstation-app_default` first; if it contains any unrelated container, stop and resolve that conflict with its owner. After separate cutover authorization, stop/remove only the old Dashboard, remove its now-empty network, and run `npm run docker:up`. Never leave the old unauthenticated instance running as a fallback. Rollbacks must retain the login/HTTPS/ingress boundary; do not restore the old LAN publication.
 
@@ -127,6 +146,16 @@ ss -ltn
 There must be exactly one `3000/tcp` publication, on the configured `100.64.0.0/10` address and configured port. It must not show `0.0.0.0`, `::`, a LAN address, or another publication. The container uses `HOSTNAME=0.0.0.0` only inside Docker so its bridge publication works. The launcher defaults to loopback when Compose does not set `HOSTNAME`.
 
 The image runs as UID/GID 1000 with all capabilities dropped, no-new-privileges, a read-only root filesystem, a restricted `/tmp` tmpfs, five unchanged read-only metrics mounts, a writable UID-1000 auth bind, and a read-only TLS bind.
+
+An owner-authorized local packet check is available after deployment:
+
+```sh
+sudo python3 scripts/verify-ingress.py \
+  --origin https://name.tailnet.ts.net \
+  --tailscale-ip TAILSCALE_IP --container-ip DASHBOARD_CONTAINER_IP
+```
+
+It first requires certificate-verified host HTTPS access, then creates a disposable namespace and veth pair to send real non-Tailscale requests. It requires both timeouts and increased counters on the exact drop rule for published-address and direct-container attempts. It removes only its own network objects, and refuses an existing route conflict. It does not alter firewall rules, forwarding settings, or existing routes/interfaces. This exercises the ingress rule, not remote DNS or tailnet ACLs.
 
 From a separate LAN client without Tailscale, verify even a request routed to the Tailscale address with the correct HTTPS hostname cannot connect. From an authorized Tailscale peer, verify that it can. Inspect the DOCKER-USER rule counters to confirm which rule handles the refused attempt. The Docker host administrator remains trusted; local host processes can access container networks.
 

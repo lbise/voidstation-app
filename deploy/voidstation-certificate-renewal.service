@@ -1,0 +1,16 @@
+[Unit]
+Description=Renew the Voidstation Tailscale certificate
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=180
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+ProtectSystem=full
+Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin
+Environment=VOIDSTATION_TLS_DIRECTORY=/var/lib/voidstation/tls
+Environment=VOIDSTATION_HOSTNAME_FILE=/etc/voidstation/hostname
+ExecStart=/usr/local/libexec/voidstation-renew-certificate

@@ -24,7 +24,7 @@ RUN mkdir -p /host/proc /host/filesystems/root /host/filesystems/data /var/lib/v
 COPY --from=build --chown=1000:1000 /app/package.json ./
 COPY --from=build --chown=1000:1000 /app/node_modules ./node_modules
 COPY --from=build --chown=1000:1000 /app/.next ./.next
-COPY --from=build --chown=1000:1000 /app/scripts ./scripts
+COPY --from=build --chown=1000:1000 /app/scripts/https-server.mjs /app/scripts/owner.ts ./scripts/
 COPY --from=build --chown=1000:1000 /app/src/lib/auth-store.ts ./src/lib/auth-store.ts
 USER 1000:1000
 EXPOSE 3000

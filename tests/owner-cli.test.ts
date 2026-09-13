@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -43,6 +43,34 @@ describe("owner account command", () => {
     expect(missing.stderr).toMatch(/password/i);
     expect(weak.exitCode).not.toBe(0);
     expect(weak.stderr).toMatch(/password/i);
+  });
+
+  it("exits after hidden terminal password entry so an owner-run deployment can continue", async () => {
+    const database = await databasePath();
+    const output = execFileSync("python3", ["-c", String.raw`
+import os, pty, select, subprocess, sys, time
+master, slave = pty.openpty()
+child = subprocess.Popen([sys.argv[1], 'scripts/owner.ts', 'bootstrap'],
+    stdin=slave, stdout=slave, stderr=slave,
+    env={**os.environ, 'VOIDSTATION_AUTH_DB': sys.argv[2]}, close_fds=True)
+try:
+    output = b''
+    deadline = time.monotonic() + 5
+    while b'Password: ' not in output and time.monotonic() < deadline:
+        if select.select([master], [], [], .1)[0]: output += os.read(master, 4096)
+    assert b'Password: ' in output, 'Missing terminal prompt'
+    password = b'disposable-tty-password'
+    os.write(master, password + b'\n')
+    code = child.wait(timeout=3)
+    while select.select([master], [], [], 0)[0]: output += os.read(master, 4096)
+    assert password not in output, 'Terminal echoed the password'
+    print(code)
+finally:
+    if child.poll() is None: child.kill(); child.wait()
+    os.close(master)
+    os.close(slave)
+`, process.execPath, database], { encoding: "utf8", timeout: 10_000 });
+    expect(output.trim()).toBe("0");
   });
 
   it("bootstraps the owner account once and makes the state file private", async () => {

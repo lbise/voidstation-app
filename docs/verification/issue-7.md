@@ -26,6 +26,22 @@ Chromium's sandbox could not start under this environment's user-namespace polic
 
 Built `voidstation-issue7-check` and ran an isolated, hardened container with a loopback-only HTTPS publication. Container-side bootstrap worked. Wrong login returned 401, correct login returned 200 with a secure session cookie, metrics changed from 401 to 200 after login, recovery invalidated the old cookie, and plaintext HTTP failed. Docker inspection confirmed UID 1000, read-only root, dropped capabilities, no-new-privileges, restricted tmpfs, and narrow mounts. The disposable container and temporary inputs were removed. This verifies the package, not the live Tailscale publication.
 
+## Production cutover preparation
+
+Issue #7 was reopened because the earlier SSH-tunnel test did not complete the production deployment. The owner authorized preparation of a Voidstation-only HTTPS cutover with no reboot or unrelated service restarts.
+
+The owner-run read-only host audit found Docker's DOCKER-USER jump first in FORWARD and an empty DOCKER-USER chain. UFW is installed but inactive. The old LAN/HTTP Dashboard remains running until the cutover is explicitly confirmed. Private audit output and the owner-run wizard are in ignored `artifacts/issue-7-cutover/`.
+
+New host-support scripts install the narrow ingress rule before Docker startup and renew the certificate on a timer. The wizard requires explicit approval for the Docker startup dependency, including its fail-closed effect if policy loading fails. Preflight now checks that dependency and the active renewal timer. An owner-authorized namespace probe can verify real non-Tailscale drops without modifying existing interfaces or firewall rules.
+
+Preparation also found and fixed an owner CLI hang and prompt-echo race during terminal password entry. A pseudo-terminal regression test verifies successful exit without password echo.
+
+Follow-up checks: `npm test` passed all 93 tests, `npm run typecheck` passed, and the revised Docker image built successfully. Its owner bootstrap CLI passed in a disposable, network-disabled, read-only container as UID/GID 1000. The owner wizard passed Bash syntax checks, all six embedded Python blocks parsed, and its shared library matches the template unchanged.
+
+Review fixes include serialized certificate replacement, a persistent restart obligation after renewal failure, private TLS-directory permissions, and one provisioning path shared by the wizard and runbook. The wizard offers an authenticated host-metrics comparison with a private, short-lived session, followed by the packet-level ingress check. Neither live check has run yet. Standards and Spec/security reviews passed after fixes, including a resumed-run edge: renewal activation now waits until the owner has approved Dashboard interruption.
+
+These are prepared and tested procedures, not evidence that the host installation or cutover has run. The ticket remains open pending execution and actual client verification.
+
 ## Deployment limits
 
 No live access cutover, Tailscale changes, certificate provisioning, reboot, or disruption of unrelated services was authorized or performed. The old local `.env` was left untouched and must be migrated by the owner before deployment.

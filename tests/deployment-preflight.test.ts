@@ -19,6 +19,8 @@ type PreflightOptions = {
   ingressRule?: "missing" | "after-accept";
   forwardRule?: boolean;
   runtimeAccess?: boolean;
+  bootProtection?: boolean;
+  renewalTarget?: boolean;
   postDeploy?: boolean;
   inspection?: (paths: Paths, endpoint: Endpoint) => Record<string, any>;
   setup?: (paths: Paths, workspace: string) => Promise<Record<string, string | undefined> | void>;
@@ -149,6 +151,17 @@ if [ "$1 $2 $3" = "status --json " ]; then cat "$PREFLIGHT_TAILSCALE"; elif [ "$
 case "$*" in *"/dev/shm/"*) echo '{"filesystems":[{"target":"/dev/shm","uuid":"data-uuid"}]}' ;; *) echo '{"filesystems":[{"target":"/","uuid":"root-uuid"}]}' ;; esac
 `);
   await writeExecutable(join(bin, "ss"), "#!/usr/bin/env sh\nexit 0\n");
+  await writeExecutable(join(bin, "systemctl"), `#!/usr/bin/env sh
+if [ "${options.bootProtection === false}" = true ]; then echo 'ActiveState=inactive'; exit 0; fi
+case "$2" in
+  voidstation-ingress.service) printf 'ActiveState=active\\nUnitFileState=enabled\\nBefore=docker.service\\nPartOf=docker.service\\nExecStart={ path=/usr/local/libexec/voidstation-ingress ; }\\n' ;;
+  docker.service) echo 'voidstation-ingress.service containerd.service' ;;
+  voidstation-certificate-renewal.timer) printf 'ActiveState=active\\nUnitFileState=enabled\\nUnit=voidstation-certificate-renewal.service\\n' ;;
+  voidstation-certificate-renewal.service) printf 'Environment=PATH=/usr/bin VOIDSTATION_TLS_DIRECTORY=%s VOIDSTATION_HOSTNAME_FILE=/etc/voidstation/hostname\\nExecStart={ path=/usr/local/libexec/voidstation-renew-certificate ; }\\n' "${options.renewalTarget === false ? "/wrong" : "$PREFLIGHT_TLS"}" ;;
+  *) exit 1 ;;
+esac
+`);
+  await writeExecutable(join(bin, "cat"), '#!/usr/bin/env sh\nif [ "$1" = /etc/voidstation/hostname ]; then echo voidstation.test-tailnet.ts.net; else exec /bin/cat "$@"; fi\n');
   await writeExecutable(join(bin, "sudo"), "#!/usr/bin/env sh\nshift\nexec \"$@\"\n");
   await writeExecutable(join(bin, "setpriv"), `#!/usr/bin/env sh
 ${options.runtimeAccess === false ? "exit 1" : "shift 3; exec \"$@\""}
@@ -212,6 +225,7 @@ syncBuiltinESMExports();`);
       ...setupEnvironment,
       PATH: `${bin}:${process.env.PATH}`,
       PREFLIGHT_COMPOSE: join(workspace, "compose.json"),
+      PREFLIGHT_TLS: tls,
       PREFLIGHT_INSPECT: join(workspace, "inspect.json"),
       PREFLIGHT_TAILSCALE: join(workspace, "tailscale.json"),
       PREFLIGHT_SERVE: join(workspace, "serve.json"),
@@ -378,6 +392,14 @@ it("rejects a certificate without the origin hostname", async () => {
 
 it("rejects Tailscale Funnel", async () => {
   expect((await runPreflight(lockedDashboard, { funnel: true })).output).toContain("Tailscale Funnel is enabled");
+});
+
+it("rejects deployment without an active persistent ingress dependency and certificate renewal timer", async () => {
+  expect((await runPreflight(lockedDashboard, { bootProtection: false })).output).toContain("persistent ingress protection");
+});
+
+it("rejects a renewal service that would update a different certificate directory", async () => {
+  expect((await runPreflight(lockedDashboard, { renewalTarget: false })).output).toContain("renewal configuration must match");
 });
 
 it("accepts a healthy deployed dashboard and a certificate-verified HTTPS login response", async () => {

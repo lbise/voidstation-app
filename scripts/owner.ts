@@ -22,14 +22,13 @@ async function readHiddenPassword() {
     throw new Error("Use --password-stdin when standard input is not a TTY.");
   }
 
-  process.stdout.write("Password: ");
   process.stdin.setRawMode(true);
-  process.stdin.resume();
   return await new Promise<string>((resolve, reject) => {
     const bytes: number[] = [];
     const done = (callback: () => void) => {
       process.stdin.off("data", onData);
       process.stdin.setRawMode(false);
+      process.stdin.pause();
       process.stdout.write("\n");
       callback();
     };
@@ -55,6 +54,8 @@ async function readHiddenPassword() {
       }
     };
     process.stdin.on("data", onData);
+    process.stdin.resume();
+    process.stdout.write("Password: ");
   });
 }
 

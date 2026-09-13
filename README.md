@@ -29,7 +29,7 @@ npm run build             # Standalone production build only
 npm start                 # TLS-only production server; requires TLS cert/key and origin env
 ```
 
-GitHub Actions runs installation, type checking, and `npm test`. The HTTP test starts the real TLS-only production server on a temporary loopback port with a temporary trusted certificate and owner database. It exercises protected pages, metrics, login, logout, throttling, recovery, and origin rejection, alongside measurement regressions. It removes its files and process afterward. OpenSSL is required. No private-network access is needed.
+GitHub Actions runs installation, type checking, and `npm test`. The HTTP test starts the real TLS-only production server on a temporary loopback port with a temporary trusted certificate and owner database. It exercises protected pages, metrics, login, logout, throttling, recovery, and origin rejection, alongside measurement regressions. It removes its files and process afterward. OpenSSL, Python 3, and Bash are required for the Linux test suite. No private-network access or root privileges are needed.
 
 ## Measurements and the HTTP contract
 

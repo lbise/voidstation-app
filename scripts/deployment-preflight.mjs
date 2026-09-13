@@ -396,6 +396,37 @@ function validateIngress() {
   }
 }
 
+function validateHostSupport(tlsDirectory, hostname) {
+  const properties = (unit, names) => Object.fromEntries(
+    run("systemctl", ["show", unit, `--property=${names.join(",")}`], `Inspecting ${unit}`)
+      .trim().split("\n").map((line) => {
+        const separator = line.indexOf("=");
+        return [line.slice(0, separator), line.slice(separator + 1)];
+      }),
+  );
+  const ingress = properties("voidstation-ingress.service", ["ActiveState", "UnitFileState", "Before", "PartOf", "ExecStart"]);
+  const requires = run("systemctl", ["show", "docker.service", "--property=Requires", "--value"], "Inspecting Docker startup dependencies").trim().split(/\s+/);
+  if (ingress.ActiveState !== "active" || ingress.UnitFileState !== "enabled" ||
+      !ingress.Before?.split(/\s+/).includes("docker.service") ||
+      !ingress.PartOf?.split(/\s+/).includes("docker.service") ||
+      !ingress.ExecStart?.includes("path=/usr/local/libexec/voidstation-ingress ;") ||
+      !requires.includes("voidstation-ingress.service")) {
+    fail("Voidstation needs active persistent ingress protection required before Docker startup. See docs/deployment.md.");
+  }
+  const renewal = properties("voidstation-certificate-renewal.timer", ["ActiveState", "UnitFileState", "Unit"]);
+  if (renewal.ActiveState !== "active" || renewal.UnitFileState !== "enabled" || renewal.Unit !== "voidstation-certificate-renewal.service") {
+    fail("Voidstation certificate renewal timer must be enabled and active.");
+  }
+  const renewalService = properties("voidstation-certificate-renewal.service", ["Environment", "ExecStart"]);
+  const renewalEnvironment = renewalService.Environment?.split(/\s+/) ?? [];
+  if (!renewalEnvironment.includes(`VOIDSTATION_TLS_DIRECTORY=${tlsDirectory}`) ||
+      !renewalEnvironment.includes("VOIDSTATION_HOSTNAME_FILE=/etc/voidstation/hostname") ||
+      !renewalService.ExecStart?.includes("path=/usr/local/libexec/voidstation-renew-certificate ;") ||
+      runAsRoot("cat", ["/etc/voidstation/hostname"], "Checking certificate renewal hostname").trim() !== hostname) {
+    fail("Voidstation renewal configuration must match the deployed TLS directory and hostname.");
+  }
+}
+
 function validateRuntimeAccess(probes) {
   const inputs = [
     ...probes.proc.map((source) => [source, fs.constants.R_OK]),
@@ -540,6 +571,7 @@ async function main() {
   validateRuntimeAccess(probes);
   tailscaleStatus(endpoint, hostname);
   validateIngress();
+  validateHostSupport(probes.tls, hostname);
   const ownDashboardBinding = inspectPortConflicts(endpoint);
   inspectNativeListeners(endpoint, ownDashboardBinding);
   if (postDeploy) await postDeployInspection(endpoint, probes, environmentMap(service.environment).VOIDSTATION_ORIGIN);
