@@ -6,7 +6,13 @@ import { afterEach, expect, it } from "vitest";
 
 const workspaces: string[] = [];
 
-type Options = { routeOverlap?: boolean; wrongRule?: boolean; failVethMove?: boolean; failCleanup?: boolean; noDroppedPackets?: boolean; diagnostics?: boolean };
+type Options = {
+  routeOverlap?: boolean; wrongRule?: boolean; failVethMove?: boolean; failCleanup?: boolean;
+  noDroppedPackets?: boolean; diagnostics?: boolean;
+  rawDrop?: "matching" | "unrelated" | "wrong-bridge" | "unchanged" | "duplicate";
+  tailscaleNoDrop?: boolean;
+  directProbeExit?: number;
+};
 
 async function executable(path: string, source: string) {
   await writeFile(path, source);
@@ -19,7 +25,9 @@ async function runVerification(options: Options = {}) {
   const bin = join(workspace, "bin");
   const log = join(workspace, "commands.log");
   const counter = join(workspace, "counter");
+  const rawCounter = join(workspace, "raw-counter");
   await writeFile(counter, "0\n");
+  await writeFile(rawCounter, "0\n");
   await writeFile(log, "");
   await mkdir(bin);
 
@@ -43,10 +51,25 @@ if [ "$3" = -nvx ]; then
 fi
 exit 2
 `);
-  await executable(join(bin, "iptables-save"), '#!/bin/sh\nprintf "*raw\\n[3:180] -A PREROUTING -d 172.18.0.2/32 -j DROP\\nCOMMIT\\n"\n');
+  await executable(join(bin, "iptables-save"), `#!/bin/sh
+if [ "${options.rawDrop ? "1" : "0"}" = 1 ]; then
+  value=$(cat "$INGRESS_RAW_COUNTER")
+  printf '*raw\\n[%s:120] -A PREROUTING -d ${options.rawDrop === "unrelated" ? "172.18.0.99" : "172.18.0.2"}/32 ! -i ${options.rawDrop === "wrong-bridge" ? "br-other" : "br-voidstation"} -j DROP\\n${options.rawDrop === "duplicate" ? "[99:5940] -A PREROUTING -d 172.18.0.2/32 ! -i br-voidstation -j DROP\\n" : ""}COMMIT\\n' "$value"
+else
+  printf '*raw\\n[3:180] -A PREROUTING -d 172.18.0.2/32 -j DROP\\nCOMMIT\\n'
+fi
+`);
   await executable(join(bin, "curl"), `#!/bin/sh
 printf 'curl %s\\n' "$*" >> "$INGRESS_LOG"
 if [ "\${IN_NETNS:-}" = 1 ]; then
+  case "$*" in
+    *:3000/login*)
+      if [ "${options.rawDrop ? "1" : "0"}" = 1 ]; then
+        ${options.rawDrop === "unchanged" ? ":" : 'value=$(cat "$INGRESS_RAW_COUNTER"); echo $((value + 2)) > "$INGRESS_RAW_COUNTER"'}
+        exit ${options.directProbeExit ?? 28}
+      fi ;;
+    *) if [ "${options.tailscaleNoDrop ? "1" : "0"}" = 1 ]; then exit 28; fi ;;
+  esac
   ${options.noDroppedPackets ? ":" : 'value=$(cat "$INGRESS_COUNTER"); echo $((value + 1)) > "$INGRESS_COUNTER"'}
   exit 28
 fi
@@ -66,7 +89,7 @@ exit 0
 
   const child = spawn("python3", ["scripts/verify-ingress.py", "--origin", "https://voidstation.tailnet.ts.net", "--tailscale-ip", "100.101.102.103", "--container-ip", "172.18.0.2", "--report-results", ...(options.diagnostics ? ["--diagnostics"] : [])], {
     cwd: process.cwd(),
-    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, INGRESS_LOG: log, INGRESS_COUNTER: counter },
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, INGRESS_LOG: log, INGRESS_COUNTER: counter, INGRESS_RAW_COUNTER: rawCounter },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";
@@ -99,6 +122,34 @@ it("verifies readiness and both refused ingress paths through its CLI", async ()
   expect(result.log).toMatch(/ip netns add vs-check-[a-f0-9]{6}/);
   expect(result.log).toMatch(/ip link del dev vsch[a-f0-9]{6}/);
   expect(result.log).toMatch(/ip netns del vs-check-[a-f0-9]{6}/);
+});
+
+it("recognizes Docker's earlier direct-container drop while retaining DOCKER-USER proof for the publication", async () => {
+  const result = await runVerification({ rawDrop: "matching" });
+  expect(result.code).toBe(0);
+  expect(result.output).toContain("PASS: tailscale-publication: timeout confirmed, ingress packets 0 -> 1");
+  expect(result.output).toContain("PASS: container-address: timeout confirmed, Docker raw PREROUTING packets 0 -> 2");
+  expect(result.output).toContain("tailscale-blocked=yes, container-blocked=yes");
+});
+
+it.each(["unrelated", "wrong-bridge", "unchanged", "duplicate"] as const)("rejects %s raw-table evidence for the direct-container probe", async (rawDrop) => {
+  const result = await runVerification({ rawDrop });
+  expect(result.code).not.toBe(0);
+  expect(result.output).toContain("container-address: Docker ingress counter did not increase");
+  expect(result.output).not.toContain("tailscale-blocked=yes, container-blocked=yes");
+});
+
+it("does not substitute a container raw-drop counter for the published-address ingress proof", async () => {
+  const result = await runVerification({ rawDrop: "matching", tailscaleNoDrop: true });
+  expect(result.code).not.toBe(0);
+  expect(result.output).toContain("tailscale-publication: Docker ingress counter did not increase");
+  expect(result.output).toContain("PASS: container-address:");
+});
+
+it.each([0, 7])("rejects curl exit %i even if the matching raw-drop counter increases", async (directProbeExit) => {
+  const result = await runVerification({ rawDrop: "matching", directProbeExit });
+  expect(result.code).not.toBe(0);
+  expect(result.output).toContain("container-address: Blocked ingress probe did not time out");
 });
 
 it("refuses the documented test subnet when an existing route overlaps it", async () => {

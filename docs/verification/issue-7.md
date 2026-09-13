@@ -59,11 +59,22 @@ The packet verifier now identifies each probe separately and offers private read
 
 A separate owner-run verification-only wizard is prepared under ignored `artifacts/issue-7-cutover/verify-only.sh`. It does not rebuild, redeploy, install services, change firewall rules, bootstrap, or reset the password. The ticket remains open. The follow-up changes passed all 95 tests, typecheck, and Standards/Spec security reviews. The owner-metrics CLI now validates the local Tailscale identity before requesting a password.
 
-## Remaining deployment verification
+## Verification-only retry results
 
-- Determine why the packet counter did not increase and complete real ingress verification. No firewall changes have been made by the agent to hide or bypass this failure.
+The owner's next run passed authenticated login, the independent comparison of all five Dashboard measurements, and smoke-session logout. Its metrics report contains an empty failures list. No password reset or redeployment was needed. The first generic login failure's cause remains unknown, but it did not recur.
+
+The captured packet evidence explains the remaining verifier failure:
+
+- The non-Tailscale published-address probe timed out and increased the first DOCKER-USER counter from 2 to 4.
+- The direct-container probe timed out and increased Docker's exact container-specific raw/PREROUTING DROP counter from 0 to 2. The later DOCKER-USER counter correctly stayed at 4 because those packets never reached it.
+
+Both tested paths were blocked. The verifier incorrectly assumed every dropped probe would reach DOCKER-USER. Its CLI regression now covers this earlier-drop sequence, rejects counters for another IP or bridge, rejects unchanged counters and non-timeout results, and continues to require DOCKER-USER evidence for the published address. No firewall rules were changed to make the verification pass.
+
+The corrected CLI has been tested with simulated external commands reproducing this sequence. The live evidence above comes from the owner's captured run, not a new privileged probe by the agent. Raw reports remain private under ignored `artifacts/issue-7-cutover/`. All 103 tests, typecheck, and Standards/Spec security reviews passed after the fix. Read-only inspection found no remaining test namespaces or veth interfaces.
+
+## Remaining deployment verification
 - Verify HTTPS and login from a desktop/mobile Tailscale client, including an off-LAN peer. Confirm a device without Tailscale cannot reach the application through the LAN address or by routing to its Tailscale/container address with the correct HTTPS hostname.
 - Check tailnet ACLs, router/UPnP forwarding, alternate proxies, and Funnel. Local Docker configuration cannot prove absence of every external forwarding path.
-- Repeat authenticated host/API measurement comparisons, crash recovery, boot-order inspection, and unrelated-service continuity checks.
+- Any live crash/reboot test requires separate authorization. No reboot or Docker/Tailscale restart was performed. Unit ordering and unrelated-service continuity have been inspected without those interruptions.
 
 The provisioning and recovery procedure is in [the deployment runbook](../deployment.md). Earlier issue #5 evidence concerns the superseded LAN/HTTP release and is not evidence of this cutover.

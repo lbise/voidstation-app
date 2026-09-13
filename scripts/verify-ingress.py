@@ -140,6 +140,24 @@ def rule_packets():
     fail("Docker ingress counter is unavailable.")
 
 
+def direct_drop_packets(address):
+    # Docker can drop direct-container traffic in raw/PREROUTING, before
+    # DOCKER-USER. Only this exact target/bridge rule is usable as evidence.
+    try:
+        result = run(["iptables-save", "-c", "-t", "raw"], "Reading Docker direct-container drop", check=False)
+    except VerificationError:
+        return None
+    if result.returncode:
+        return None
+    expected = f"-A PREROUTING -d {address}/32 ! -i br-voidstation -j DROP"
+    matches = []
+    for line in result.stdout.splitlines():
+        match = re.fullmatch(r"\[(\d+):\d+\] (.+)", line)
+        if match and match.group(2) == expected:
+            matches.append(int(match.group(1)))
+    return matches[0] if len(matches) == 1 else None
+
+
 def curl_arguments(host, port, address):
     return ["curl", "--noproxy", "*", "--connect-timeout", "2", "--max-time", "3",
             "--resolve", f"{host}:{port}:{address}", "--write-out", "%{http_code}",
@@ -172,15 +190,20 @@ def diagnostic_snapshot(namespace, host_veth, address):
     return snapshot
 
 
-def check_blocked(namespace, host, port, address, label):
+def check_blocked(namespace, host, port, address, label, allow_raw_drop=False):
     before = rule_packets()
+    raw_before = direct_drop_packets(address) if allow_raw_drop else None
     result = run(["ip", "netns", "exec", namespace, *curl_arguments(host, port, address)],
                  "Blocked ingress probe", check=False, timeout=5)
     after = rule_packets()
+    raw_after = direct_drop_packets(address) if allow_raw_drop else None
     if result.returncode != 28:
         fail(f"{label}: Blocked ingress probe did not time out (curl exit={result.returncode}).")
     if after <= before:
-        fail(f"{label}: Docker ingress counter did not increase (before={before}, after={after}, curl exit={result.returncode}).")
+        if raw_before is not None and raw_after is not None and raw_after > raw_before:
+            print(f"PASS: {label}: timeout confirmed, Docker raw PREROUTING packets {raw_before} -> {raw_after}.", flush=True)
+            return raw_after
+        fail(f"{label}: Docker ingress counter did not increase (before={before}, after={after}, curl exit={result.returncode}); no matching earlier drop was proven.")
     print(f"PASS: {label}: timeout confirmed, ingress packets {before} -> {after}.", flush=True)
     return after
 
@@ -253,7 +276,8 @@ def main():
                 print(json.dumps({"probe": label, "phase": "before", "diagnostics":
                                   diagnostic_snapshot(namespace, host_veth, address)}), flush=True)
             try:
-                container_packets = check_blocked(namespace, host, target_port, address, label)
+                container_packets = check_blocked(namespace, host, target_port, address, label,
+                                                  allow_raw_drop=(label == "container-address"))
             except VerificationError as error:
                 failures.append(str(error))
             finally:
