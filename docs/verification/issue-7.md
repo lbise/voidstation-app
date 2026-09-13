@@ -72,9 +72,16 @@ Both tested paths were blocked. The verifier incorrectly assumed every dropped p
 
 The corrected CLI has been tested with simulated external commands reproducing this sequence. The live evidence above comes from the owner's captured run, not a new privileged probe by the agent. Raw reports remain private under ignored `artifacts/issue-7-cutover/`. All 103 tests, typecheck, and Standards/Spec security reviews passed after the fix. Read-only inspection found no remaining test namespaces or veth interfaces.
 
-## Remaining deployment verification
-- Verify HTTPS and login from a desktop/mobile Tailscale client, including an off-LAN peer. Confirm a device without Tailscale cannot reach the application through the LAN address or by routing to its Tailscale/container address with the correct HTTPS hostname.
-- Check tailnet ACLs, router/UPnP forwarding, alternate proxies, and Funnel. Local Docker configuration cannot prove absence of every external forwarding path.
+## Owner acceptance and closure
+
+After being asked to verify desktop access without the SSH tunnel, phone access over mobile data with Tailscale, and login/logout behavior, the owner confirmed that it works and approved closing #7. These client checks are owner-reported; the agent did not operate those devices.
+
+Production deployment, persistent owner access, authenticated measurements, and the captured non-Tailscale ingress checks are complete for this issue.
+
+## Verification limits
+
+- Non-Tailscale ingress evidence came from the controlled namespace probes, not a separately observed physical LAN client.
+- Tailnet ACLs, router/UPnP forwarding, alternate proxies, and Funnel remain host-administration responsibilities. Local Docker configuration cannot prove absence of every external forwarding path.
 - Any live crash/reboot test requires separate authorization. No reboot or Docker/Tailscale restart was performed. Unit ordering and unrelated-service continuity have been inspected without those interruptions.
 
 The provisioning and recovery procedure is in [the deployment runbook](../deployment.md). Earlier issue #5 evidence concerns the superseded LAN/HTTP release and is not evidence of this cutover.
