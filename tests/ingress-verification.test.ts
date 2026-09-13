@@ -6,7 +6,7 @@ import { afterEach, expect, it } from "vitest";
 
 const workspaces: string[] = [];
 
-type Options = { routeOverlap?: boolean; wrongRule?: boolean; failVethMove?: boolean; failCleanup?: boolean; noDroppedPackets?: boolean };
+type Options = { routeOverlap?: boolean; wrongRule?: boolean; failVethMove?: boolean; failCleanup?: boolean; noDroppedPackets?: boolean; diagnostics?: boolean };
 
 async function executable(path: string, source: string) {
   await writeFile(path, source);
@@ -43,6 +43,7 @@ if [ "$3" = -nvx ]; then
 fi
 exit 2
 `);
+  await executable(join(bin, "iptables-save"), '#!/bin/sh\nprintf "*raw\\n[3:180] -A PREROUTING -d 172.18.0.2/32 -j DROP\\nCOMMIT\\n"\n');
   await executable(join(bin, "curl"), `#!/bin/sh
 printf 'curl %s\\n' "$*" >> "$INGRESS_LOG"
 if [ "\${IN_NETNS:-}" = 1 ]; then
@@ -63,7 +64,7 @@ if [ "$1 $2" = "link del" ] && [ "${options.failCleanup ? "1" : "0"}" = 1 ]; the
 exit 0
 `);
 
-  const child = spawn("python3", ["scripts/verify-ingress.py", "--origin", "https://voidstation.tailnet.ts.net", "--tailscale-ip", "100.101.102.103", "--container-ip", "172.18.0.2", "--report-results"], {
+  const child = spawn("python3", ["scripts/verify-ingress.py", "--origin", "https://voidstation.tailnet.ts.net", "--tailscale-ip", "100.101.102.103", "--container-ip", "172.18.0.2", "--report-results", ...(options.diagnostics ? ["--diagnostics"] : [])], {
     cwd: process.cwd(),
     env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, INGRESS_LOG: log, INGRESS_COUNTER: counter },
     stdio: ["ignore", "pipe", "pipe"],
@@ -120,6 +121,17 @@ it("does not claim a timeout proves ingress protection without matching dropped 
   const result = await runVerification({ noDroppedPackets: true });
   expect(result.code).not.toBe(0);
   expect(result.output).toContain("Docker ingress counter did not increase");
+});
+
+it("identifies both failing probe paths and captures earlier firewall counters without weakening verification", async () => {
+  const result = await runVerification({ noDroppedPackets: true, diagnostics: true });
+  expect(result.code).not.toBe(0);
+  expect(result.output).toContain("tailscale-publication: Docker ingress counter did not increase");
+  expect(result.output).toContain("container-address: Docker ingress counter did not increase");
+  expect(result.output).toContain('"probe": "container-address"');
+  expect(result.output).toContain("[3:180] -A PREROUTING");
+  expect(result.log).toMatch(/ip link del dev vsch[a-f0-9]{6}/);
+  expect(result.log).toMatch(/ip netns del vs-check-[a-f0-9]{6}/);
 });
 
 it("reports cleanup failure and still attempts to remove the namespace", async () => {

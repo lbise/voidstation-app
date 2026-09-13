@@ -38,19 +38,30 @@ Preparation also found and fixed an owner CLI hang and prompt-echo race during t
 
 Follow-up checks: `npm test` passed all 93 tests, `npm run typecheck` passed, and the revised Docker image built successfully. Its owner bootstrap CLI passed in a disposable, network-disabled, read-only container as UID/GID 1000. The owner wizard passed Bash syntax checks, all six embedded Python blocks parsed, and its shared library matches the template unchanged.
 
-Review fixes include serialized certificate replacement, a persistent restart obligation after renewal failure, private TLS-directory permissions, and one provisioning path shared by the wizard and runbook. The wizard offers an authenticated host-metrics comparison with a private, short-lived session, followed by the packet-level ingress check. Neither live check has run yet. Standards and Spec/security reviews passed after fixes, including a resumed-run edge: renewal activation now waits until the owner has approved Dashboard interruption.
+Review fixes include serialized certificate replacement, a persistent restart obligation after renewal failure, private TLS-directory permissions, and one provisioning path shared by the wizard and runbook. The wizard offers an authenticated host-metrics comparison with a private, short-lived session, followed by the packet-level ingress check. At that preparation checkpoint, neither live check had run. Standards and Spec/security reviews passed after fixes, including a resumed-run edge: renewal activation now waits until the owner has approved Dashboard interruption.
 
-These are prepared and tested procedures, not evidence that the host installation or cutover has run. The ticket remains open pending execution and actual client verification.
+Those preparation checks did not themselves prove a live cutover. The owner-run execution below happened afterward.
 
-## Deployment limits
+## Owner-run cutover and incomplete verification
 
-No live access cutover, Tailscale changes, certificate provisioning, reboot, or disruption of unrelated services was authorized or performed. The old local `.env` was left untouched and must be migrated by the owner before deployment.
+The owner ran the wizard through deployment and account bootstrap. Stage 5 passed post-deploy inspection but failed the authenticated smoke check with a generic error. The isolated packet probe timed out without increasing the expected DOCKER-USER counter. A subsequent bootstrap attempt correctly refused to overwrite the account.
 
-Still requires owner authorization and host-specific verification:
+Read-only follow-up inspection confirmed:
 
-- Provision the Tailscale hostname certificate and its renewal procedure, bootstrap the persistent account, and run preflight with the real filesystem UUID and dedicated paths.
-- Authorize and install the narrow DOCKER-USER ingress rule. Persist it before Docker container startup and verify its ordering. This agent did not modify the firewall or test real packets against that rule.
-- Replace the old LAN/HTTP publications and inspect the running container, including plaintext requests to its IP. Do not leave the prior unauthenticated release running alongside this one.
+- The Dashboard is running with a single publication on the Server's Tailscale IPv4, port 443. The old port-3000 publications are gone.
+- Python reaches `/login` with HTTP 200 and normal certificate verification.
+- The dedicated bridge is `br-voidstation`; the ingress service and renewal timer are active and enabled.
+- All 12 unrelated containers in the latest wizard baseline retained their IDs, start times, and restart counts. Docker and Tailscale process identities also match that baseline.
+
+Neither verification failure proves its cause. The authenticated-check error hid the failing phase; the updated CLI reports terminal, HTTP, and session errors without credentials. A synthetic HTTPS/terminal test verifies host-only secure-cookie handling, logout, and error reporting. This does not establish why the owner's particular login attempt failed.
+
+The packet verifier now identifies each probe separately and offers private read-only diagnostics for earlier firewall counters, interface traffic, and routing. It still refuses to treat a timeout alone as proof of ingress protection. The agent cannot repeat the privileged probe unattended because sudo requires the owner's password.
+
+A separate owner-run verification-only wizard is prepared under ignored `artifacts/issue-7-cutover/verify-only.sh`. It does not rebuild, redeploy, install services, change firewall rules, bootstrap, or reset the password. The ticket remains open. The follow-up changes passed all 95 tests, typecheck, and Standards/Spec security reviews. The owner-metrics CLI now validates the local Tailscale identity before requesting a password.
+
+## Remaining deployment verification
+
+- Determine why the packet counter did not increase and complete real ingress verification. No firewall changes have been made by the agent to hide or bypass this failure.
 - Verify HTTPS and login from a desktop/mobile Tailscale client, including an off-LAN peer. Confirm a device without Tailscale cannot reach the application through the LAN address or by routing to its Tailscale/container address with the correct HTTPS hostname.
 - Check tailnet ACLs, router/UPnP forwarding, alternate proxies, and Funnel. Local Docker configuration cannot prove absence of every external forwarding path.
 - Repeat authenticated host/API measurement comparisons, crash recovery, boot-order inspection, and unrelated-service continuity checks.

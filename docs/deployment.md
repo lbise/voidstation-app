@@ -117,6 +117,8 @@ docker compose --project-name voidstation-app run --rm --no-deps dashboard \
 #   node scripts/owner.ts recover --password-stdin
 ```
 
+An "already exists" bootstrap error means the account is configured; it did not replace the existing password. Do not repeat the cutover to retry verification. Use the existing account, or explicitly choose recovery if its password is lost.
+
 The `bootstrap` and `recover [--password-stdin]` commands use `VOIDSTATION_AUTH_DB`, which Compose fixes at `/var/lib/voidstation/auth.sqlite`. Do not override that path.
 
 ## Verify exposure and HTTPS
@@ -161,14 +163,17 @@ From a separate LAN client without Tailscale, verify even a request routed to th
 
 Preflight cannot prove router forwarding, UPnP, tailnet ACL policy, DNS resolution from another peer, physical network reachability, or that no owner later enables Funnel. The owner must separately authorize any cutover and verify from an off-LAN Tailscale device that the HTTPS origin works and that no public forwarding path exists. Record unavailable checks instead of assuming a firewall protects Docker-published ports.
 
+If a packet probe times out without increasing the expected counter, verification remains incomplete. Add `--diagnostics` to capture read-only raw-table counters, forwarding counters, test-interface statistics, and route lookup results. These private snapshots distinguish an earlier firewall drop from a delivery problem. They do not relax the pass criteria. Keep the output in an owner-only local report.
+
 ## Authenticated metrics smoke check
 
-Metrics now require a session. `scripts/docker-smoke.py` accepts a session cookie through `VOIDSTATION_SMOKE_COOKIE`; it never logs the cookie. Supply the full `name=value` cookie from an approved local test session, then run the check against the HTTPS origin.
+Run this from an interactive terminal on the Server. Before prompting, it requires a canonical HTTPS `.ts.net` origin matching this Server's running Tailscale identity. It reads the existing owner's password with echo disabled, creates a temporary session, runs the comparison, and attempts logout afterward. It does not bootstrap or reset the account.
 
 ```sh
-VOIDSTATION_SMOKE_COOKIE='session=value' \
-  python3 scripts/docker-smoke.py https://name.tailnet.ts.net:PORT ROOT_PROBE DATA_PROBE
+python3 scripts/verify-owner-metrics.py https://name.tailnet.ts.net ROOT_PROBE DATA_PROBE
 ```
+
+Errors identify terminal input, login HTTP status, or session handling without printing credentials. HTTP 401 means login was rejected; HTTP 429 means wait before retrying. The lower-level `scripts/docker-smoke.py` also accepts an approved test session through `VOIDSTATION_SMOKE_COOKIE`, without logging it.
 
 The script disables proxy use and performs the same independent host comparison as the prior deployment check. Keep raw output under ignored `artifacts/`. Do not commit cookies, IP addresses, certificate paths, UUIDs, or auth data.
 

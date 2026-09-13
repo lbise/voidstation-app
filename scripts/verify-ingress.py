@@ -152,15 +152,36 @@ def check_readiness(host, port, tailscale_ip):
         fail("TLS login readiness failed.")
 
 
-def check_blocked(namespace, host, port, address):
+def diagnostic_snapshot(namespace, host_veth, address):
+    # Earlier raw-table drops distinguish Docker's own protection from our
+    # FORWARD rule. Link counters and route lookup distinguish delivery failures.
+    commands = {
+        "raw": ["iptables-save", "-c", "-t", "raw"],
+        "forward": ["iptables", "-w", "5", "-nvx", "-L", "FORWARD", "--line-numbers"],
+        "host-link": ["ip", "-stats", "link", "show", "dev", host_veth],
+        "namespace-links": ["ip", "-n", namespace, "-stats", "link", "show"],
+        "route": ["ip", "-4", "route", "get", str(address), "from", "192.0.2.2", "iif", host_veth],
+    }
+    snapshot = {}
+    for name, command in commands.items():
+        try:
+            result = run(command, "Reading ingress diagnostics", check=False)
+            snapshot[name] = {"exit": result.returncode, "output": result.stdout, "error": result.stderr}
+        except VerificationError as error:
+            snapshot[name] = {"error": str(error)}
+    return snapshot
+
+
+def check_blocked(namespace, host, port, address, label):
     before = rule_packets()
     result = run(["ip", "netns", "exec", namespace, *curl_arguments(host, port, address)],
                  "Blocked ingress probe", check=False, timeout=5)
     after = rule_packets()
     if result.returncode != 28:
-        fail("Blocked ingress probe did not time out.")
+        fail(f"{label}: Blocked ingress probe did not time out (curl exit={result.returncode}).")
     if after <= before:
-        fail("Docker ingress counter did not increase.")
+        fail(f"{label}: Docker ingress counter did not increase (before={before}, after={after}, curl exit={result.returncode}).")
+    print(f"PASS: {label}: timeout confirmed, ingress packets {before} -> {after}.", flush=True)
     return after
 
 
@@ -189,6 +210,8 @@ def arguments():
     parser.add_argument("--tailscale-ip", required=True)
     parser.add_argument("--container-ip", required=True)
     parser.add_argument("--report-results", action="store_true")
+    parser.add_argument("--diagnostics", action="store_true",
+                        help="Include private read-only firewall/link/route snapshots; keep output local.")
     return parser.parse_args()
 
 
@@ -222,10 +245,25 @@ def main():
         run(["ip", "-n", namespace, "addr", "add", "192.0.2.2/30", "dev", namespace_veth], "Configuring test namespace")
         run(["ip", "-n", namespace, "link", "set", namespace_veth, "up"], "Enabling test namespace veth")
         run(["ip", "-n", namespace, "route", "add", "default", "via", "192.0.2.1", "dev", namespace_veth], "Configuring test namespace route")
-        check_blocked(namespace, host, port, tailscale_ip)
-        container_packets = check_blocked(namespace, host, 3000, container_ip)
+        failures = []
+        container_packets = 0
+        for label, target_port, address in (("tailscale-publication", port, tailscale_ip),
+                                            ("container-address", 3000, container_ip)):
+            if args.diagnostics:
+                print(json.dumps({"probe": label, "phase": "before", "diagnostics":
+                                  diagnostic_snapshot(namespace, host_veth, address)}), flush=True)
+            try:
+                container_packets = check_blocked(namespace, host, target_port, address, label)
+            except VerificationError as error:
+                failures.append(str(error))
+            finally:
+                if args.diagnostics:
+                    print(json.dumps({"probe": label, "phase": "after", "diagnostics":
+                                      diagnostic_snapshot(namespace, host_veth, address)}), flush=True)
     finally:
         cleanup(namespace, host_veth, namespace_created, veth_created)
+    if failures:
+        fail("; ".join(failures))
     if args.report_results:
         print(f"PASS: readiness=200, tailscale-blocked=yes, container-blocked=yes, rule-packets={container_packets}; owner must still check desktop/off-LAN access.")
     else:
