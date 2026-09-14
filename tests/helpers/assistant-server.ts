@@ -30,9 +30,12 @@ export async function stop(child: ChildProcess | undefined, signal: NodeJS.Signa
 export async function assistantServer() {
   const directory = await mkdtemp(join(tmpdir(), "voidstation-assistant-"));
   const port = await freePort();
+  const lanPort = await freePort();
   const workerPort = await freePort();
   const hostname = "voidstation.test-tailnet.ts.net";
+  const lanHostname = "voidstation.test-lan.invalid";
   const origin = `https://${hostname}:${port}`;
+  const lanOrigin = `https://${lanHostname}:${lanPort}`;
   const password = "assistant-test-owner-password";
   const token = "synthetic-worker-secret-canary-123456789";
   const tokenFile = join(directory, "worker-token");
@@ -40,6 +43,8 @@ export async function assistantServer() {
   const authDatabase = join(directory, "auth", "auth.sqlite");
   const cert = join(directory, "cert.pem");
   const key = join(directory, "key.pem");
+  const lanCert = join(directory, "lan-cert.pem");
+  const lanKey = join(directory, "lan-key.pem");
   let output = "";
   let worker: ChildProcess | undefined;
   await mkdir(join(directory, "auth"), { mode: 0o700 });
@@ -48,7 +53,11 @@ export async function assistantServer() {
   execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
     "-subj", `/CN=${hostname}`, "-addext", `subjectAltName=DNS:${hostname}`,
     "-keyout", key, "-out", cert], { stdio: "ignore" });
+  execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+    "-subj", `/CN=${lanHostname}`, "-addext", `subjectAltName=DNS:${lanHostname}`,
+    "-keyout", lanKey, "-out", lanCert], { stdio: "ignore" });
   const certificate = await readFile(cert);
+  const lanCertificate = await readFile(lanCert);
   execFileSync(process.execPath, ["scripts/owner.ts", "bootstrap", "--password-stdin"], {
     env: { ...process.env, VOIDSTATION_AUTH_DB: authDatabase }, input: `${password}\n`, stdio: ["pipe", "pipe", "pipe"],
   });
@@ -59,8 +68,8 @@ export async function assistantServer() {
   };
   const app = capture(spawn(process.execPath, ["scripts/https-server.mjs"], {
     env: { ...process.env, NODE_ENV: "production", HOSTNAME: "127.0.0.1", PORT: String(port),
-      VOIDSTATION_ORIGIN: origin, VOIDSTATION_AUTH_DB: authDatabase,
-      VOIDSTATION_TLS_CERT: cert, VOIDSTATION_TLS_KEY: key,
+      VOIDSTATION_ORIGIN: origin, VOIDSTATION_LAN_ORIGIN: lanOrigin, VOIDSTATION_LAN_PORT: String(lanPort), VOIDSTATION_AUTH_DB: authDatabase,
+      VOIDSTATION_TLS_CERT: cert, VOIDSTATION_TLS_KEY: key, VOIDSTATION_LAN_TLS_CERT: lanCert, VOIDSTATION_LAN_TLS_KEY: lanKey,
       VOIDSTATION_HOST_PROC: directory, VOIDSTATION_HOST_ROOT_FS: directory, VOIDSTATION_HOST_DATA_FS: directory,
       VOIDSTATION_WORKER_URL: `http://127.0.0.1:${workerPort}`, VOIDSTATION_WORKER_TOKEN_FILE: tokenFile,
       NEXT_TELEMETRY_DISABLED: "1" }, stdio: ["ignore", "pipe", "pipe"],
@@ -72,6 +81,31 @@ export async function assistantServer() {
       headers.set("host", new URL(origin).host);
       if (cookie) headers.set("cookie", cookie);
       const req = httpsRequest({ hostname: "127.0.0.1", port, servername: hostname, ca: certificate,
+        path, method: init.method ?? "GET", headers: Object.fromEntries(headers) }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk) => chunks.push(chunk));
+        res.on("end", () => {
+          const responseHeaders = new Headers();
+          for (const [name, values] of Object.entries(res.headers)) {
+            for (const value of Array.isArray(values) ? values : values ? [values] : []) responseHeaders.append(name, value);
+          }
+          resolve(new Response(res.statusCode === 204 || init.method === "HEAD" ? null : Buffer.concat(chunks), {
+            status: res.statusCode, headers: responseHeaders,
+          }));
+        });
+      });
+      req.on("error", reject);
+      req.setTimeout(10_000, () => req.destroy(new Error("Request timed out")));
+      req.end(init.body?.toString());
+    });
+  }
+
+  function lanRequest(path: string, init: RequestInit = {}, cookie = ""): Promise<Response> {
+    return new Promise((resolve, reject) => {
+      const headers = new Headers(init.headers);
+      headers.set("host", new URL(lanOrigin).host);
+      if (cookie) headers.set("cookie", cookie);
+      const req = httpsRequest({ hostname: "127.0.0.1", port: lanPort, servername: lanHostname, ca: lanCertificate,
         path, method: init.method ?? "GET", headers: Object.fromEntries(headers) }, (res) => {
         const chunks: Buffer[] = [];
         res.on("data", (chunk) => chunks.push(chunk));
@@ -115,8 +149,8 @@ export async function assistantServer() {
   catch (error) { await stop(app); await rm(directory, { recursive: true, force: true }); throw error; }
 
   return {
-    directory, port, workerPort, origin, token, fixtureFile, certificate, hostname, password,
-    get output() { return output; }, request, internal,
+    directory, port, lanPort, workerPort, origin, lanOrigin, token, fixtureFile, certificate, lanCertificate, hostname, lanHostname, password,
+    get output() { return output; }, request, lanRequest, internal,
     stream(path: string, cookie: string) {
       return new Promise<{ status: number; reader: ReadableStreamDefaultReader<Uint8Array>; close: () => void }>((resolve, reject) => {
         const req = httpsRequest({ hostname: "127.0.0.1", port, servername: hostname, ca: certificate,
@@ -129,6 +163,18 @@ export async function assistantServer() {
         req.end();
       });
     },
+    lanStream(path: string, cookie: string) {
+      return new Promise<{ status: number; reader: ReadableStreamDefaultReader<Uint8Array>; close: () => void }>((resolve, reject) => {
+        const req = httpsRequest({ hostname: "127.0.0.1", port: lanPort, servername: lanHostname, ca: lanCertificate,
+          path, headers: { host: new URL(lanOrigin).host, cookie } }, (res) => {
+          const reader = (Readable.toWeb(res) as ReadableStream<Uint8Array>).getReader();
+          resolve({ status: res.statusCode!, reader, close: () => { void reader.cancel().catch(() => {}); req.destroy(); } });
+        });
+        req.on("error", reject);
+        req.setTimeout(10_000, () => req.destroy(new Error("LAN stream timed out")));
+        req.end();
+      });
+    },
     async session() {
       const response = await request("/api/auth/login", { method: "POST", headers: {
         origin, "content-type": "application/x-www-form-urlencoded",
@@ -136,8 +182,19 @@ export async function assistantServer() {
       if (!response.ok) throw new Error(`Login failed: ${response.status}`);
       return response.headers.get("set-cookie")!.split(";")[0];
     },
+    async lanSession() {
+      const response = await lanRequest("/api/auth/login", { method: "POST", headers: {
+        origin: lanOrigin, "content-type": "application/x-www-form-urlencoded",
+      }, body: new URLSearchParams({ password }) });
+      if (!response.ok) throw new Error(`LAN login failed: ${response.status}`);
+      return response.headers.get("set-cookie")!.split(";")[0];
+    },
     mutate(path: string, method: string, body: unknown, cookie: string) {
       return request(path, { method, headers: { origin, "content-type": "application/json" },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }) }, cookie);
+    },
+    lanMutate(path: string, method: string, body: unknown, cookie: string) {
+      return lanRequest(path, { method, headers: { origin: lanOrigin, "content-type": "application/json" },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }) }, cookie);
     },
     async startWorker(extraEnv: Record<string, string> = {}) {

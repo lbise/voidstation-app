@@ -21,6 +21,12 @@ function main() {
     "VOIDSTATION_TAILSCALE_BIND_ADDRESS=100.101.102.103",
     "VOIDSTATION_PORT=8443",
     "VOIDSTATION_ORIGIN=https://voidstation.test-tailnet.ts.net:8443",
+    "VOIDSTATION_LAN_BIND_ADDRESS=192.168.50.10",
+    "VOIDSTATION_LAN_HTTPS_PORT=3000",
+    "VOIDSTATION_LAN_ORIGIN=https://192.168.50.10:3000",
+    "VOIDSTATION_LAN_INTERFACE=enp1s0",
+    "VOIDSTATION_LAN_SOURCE=192.168.50.0/24",
+    `VOIDSTATION_LAN_TLS_DIRECTORY=${fixture}/lan-tls`,
     `VOIDSTATION_AUTH_DIRECTORY=${fixture}/auth`,
     `VOIDSTATION_TLS_DIRECTORY=${fixture}/tls`,
     `VOIDSTATION_WORKER_TOKEN_FILE=${fixture}/worker-token`,
@@ -42,8 +48,20 @@ function main() {
     const dashboard = services.dashboard;
     const worker = services["assistant-worker"];
     if (dashboard.environment?.VOIDSTATION_WORKER_URL !== "http://assistant-worker:3001" ||
-        dashboard.environment?.VOIDSTATION_WORKER_TOKEN_FILE !== "/run/voidstation-worker/token") {
-      fail("Dashboard effective worker configuration changed.");
+        dashboard.environment?.VOIDSTATION_WORKER_TOKEN_FILE !== "/run/voidstation-worker/token" ||
+        dashboard.environment?.VOIDSTATION_LAN_ORIGIN !== "https://192.168.50.10:3000" ||
+        dashboard.environment?.VOIDSTATION_LAN_PORT !== "3443" ||
+        dashboard.environment?.VOIDSTATION_LAN_TLS_CERT !== "/run/voidstation-lan-tls/cert.pem" ||
+        dashboard.environment?.VOIDSTATION_LAN_TLS_KEY !== "/run/voidstation-lan-tls/key.pem") {
+      fail("Dashboard effective dual-listener configuration changed.");
+    }
+    const publications = dashboard.ports ?? [];
+    if (publications.length !== 2 || !publications.some((port) => port.target === 3000 && port.host_ip === "100.101.102.103" && String(port.published) === "8443") ||
+        !publications.some((port) => port.target === 3443 && port.host_ip === "192.168.50.10" && String(port.published) === "3000")) {
+      fail("Dashboard must publish exactly the Tailscale and LAN listeners.");
+    }
+    if (!dashboard.volumes?.some((volume) => volume.target === "/run/voidstation-lan-tls" && volume.source === `${fixture}/lan-tls` && volume.read_only === true)) {
+      fail("Dashboard LAN TLS directory mount changed.");
     }
     const workerEnvironment = worker.environment ?? {};
     const expectedWorkerEnvironment = {

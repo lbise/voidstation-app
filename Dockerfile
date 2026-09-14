@@ -17,7 +17,7 @@ ENV NODE_ENV=production \
     VOIDSTATION_HOST_ROOT_FS=/host/filesystems/root \
     VOIDSTATION_HOST_DATA_FS=/host/filesystems/data \
     VOIDSTATION_AUTH_DB=/var/lib/voidstation/auth.sqlite
-RUN mkdir -p /host/proc /host/filesystems/root /host/filesystems/data /var/lib/voidstation /run/voidstation-tls \
+RUN mkdir -p /host/proc /host/filesystems/root /host/filesystems/data /var/lib/voidstation /run/voidstation-tls /run/voidstation-lan-tls \
     && touch /host/proc/stat /host/proc/uptime /host/proc/meminfo
 # A Next custom server is not traced as a standalone entry point. Keep the
 # production dependencies and complete build instead of relying on server.js.
@@ -27,5 +27,5 @@ COPY --from=build --chown=1000:1000 /app/.next ./.next
 COPY --from=build --chown=1000:1000 /app/scripts/https-server.mjs /app/scripts/owner.ts ./scripts/
 COPY --from=build --chown=1000:1000 /app/src/lib/auth-store.ts ./src/lib/auth-store.ts
 USER 1000:1000
-EXPOSE 3000
+EXPOSE 3000 3443
 CMD ["node", "scripts/https-server.mjs"]

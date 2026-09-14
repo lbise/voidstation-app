@@ -1,9 +1,9 @@
 [Unit]
 Description=Voidstation Docker ingress policy
 DefaultDependencies=no
-After=local-fs.target
+After=local-fs.target network-online.target
+Wants=network-online.target
 Before=docker.service
-Before=network-pre.target
 PartOf=docker.service
 
 [Service]

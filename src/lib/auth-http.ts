@@ -10,14 +10,34 @@ export const SESSION_COOKIE_OPTIONS = {
   path: "/",
 };
 
-export function applicationOrigin(): URL {
-  const value = process.env.VOIDSTATION_ORIGIN;
-  if (!value) throw new Error("VOIDSTATION_ORIGIN is required");
-  const origin = new URL(value);
+function exactHttpsOrigin(name: "VOIDSTATION_ORIGIN" | "VOIDSTATION_LAN_ORIGIN", required: boolean): URL | undefined {
+  const value = process.env[name];
+  if (!value) {
+    if (required) throw new Error(`${name} is required`);
+    return undefined;
+  }
+  let origin: URL;
+  try {
+    origin = new URL(value);
+  } catch {
+    throw new Error(`${name} must be an exact HTTPS origin`);
+  }
   if (origin.protocol !== "https:" || origin.origin !== value || origin.username || origin.password) {
-    throw new Error("VOIDSTATION_ORIGIN must be an exact HTTPS origin");
+    throw new Error(`${name} must be an exact HTTPS origin`);
   }
   return origin;
+}
+
+export function applicationOrigins(): URL[] {
+  const primary = exactHttpsOrigin("VOIDSTATION_ORIGIN", true)!;
+  const lan = exactHttpsOrigin("VOIDSTATION_LAN_ORIGIN", false);
+  if (lan && lan.host === primary.host) throw new Error("VOIDSTATION_LAN_ORIGIN must use a different host");
+  return lan ? [primary, lan] : [primary];
+}
+
+export function applicationOrigin(request: NextRequest): URL | undefined {
+  const host = request.headers.get("host");
+  return applicationOrigins().find((configured) => configured.host === host);
 }
 
 export function hasSession(request: NextRequest): boolean {
@@ -25,7 +45,8 @@ export function hasSession(request: NextRequest): boolean {
 }
 
 export function hasValidOrigin(request: NextRequest): boolean {
-  return request.headers.get("origin") === applicationOrigin().origin &&
+  const origin = applicationOrigin(request);
+  return origin !== undefined && request.headers.get("origin") === origin.origin &&
     !["cross-site", "same-site"].includes(request.headers.get("sec-fetch-site") ?? "");
 }
 

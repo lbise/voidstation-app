@@ -1,24 +1,27 @@
 #!/usr/bin/env python3
-"""Verify Docker's ingress drop with an isolated RFC 5737 TEST-NET-1 veth namespace.
+"""Verify Voidstation's dual LAN and Tailscale Docker ingress policy.
 
-This creates only a short-lived namespace, its veth pair and connected subnet. It
-does not alter existing routes, forwarding settings, firewall rules, Docker or UFW.
+The namespace probes are deliberately untrusted-veth probes. They do not pretend to
+be a physical LAN client or a Tailscale peer. An owner must perform allowed-path
+checks from those physical clients separately.
 """
 
 import argparse
 import ipaddress
 import json
+import os
 import re
 import secrets
+import shlex
 import signal
+import stat
 import subprocess
 import sys
 import time
 from urllib.parse import urlsplit
 
-EXPECTED_RULE = "-A DOCKER-USER ! -i tailscale0 -o br-voidstation -m conntrack --ctstate NEW -j DROP"
 TEST_NETWORK = ipaddress.IPv4Network("192.0.2.0/30")
-DEADLINE_SECONDS = 30
+DEADLINE_SECONDS = 40
 PROCESS_DEADLINE = None
 
 
@@ -34,10 +37,9 @@ def run(argv, description, check=True, timeout=5, respect_deadline=True):
     remaining = PROCESS_DEADLINE - time.monotonic() if PROCESS_DEADLINE else timeout
     if respect_deadline and remaining <= 0:
         fail("Ingress verification timed out.")
-    command_timeout = min(timeout, remaining) if respect_deadline else timeout
     try:
-        result = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True, timeout=command_timeout, check=False)
+        result = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, timeout=min(timeout, remaining) if respect_deadline else timeout, check=False)
     except (OSError, subprocess.TimeoutExpired):
         fail(f"{description} failed.")
     if check and result.returncode:
@@ -45,40 +47,95 @@ def run(argv, description, check=True, timeout=5, respect_deadline=True):
     return result
 
 
-def parse_origin(value):
+def private(address):
+    return any(address in network for network in (ipaddress.IPv4Network("10.0.0.0/8"), ipaddress.IPv4Network("172.16.0.0/12"), ipaddress.IPv4Network("192.168.0.0/16")))
+
+
+def read_config(path, test_config):
+    if path != "/etc/voidstation/ingress.json" and not test_config:
+        fail("Ingress configuration path is fixed.")
+    try:
+        if not test_config:
+            current = "/"
+            for component in path.strip("/").split("/")[:-1]:
+                current = os.path.join(current, component)
+                details = os.lstat(current)
+                if stat.S_ISLNK(details.st_mode) or details.st_uid != 0 or details.st_mode & 0o022:
+                    fail("Ingress configuration ancestors are not trusted.")
+            details = os.lstat(path)
+            if stat.S_ISLNK(details.st_mode) or not stat.S_ISREG(details.st_mode) or details.st_uid != 0 or (details.st_mode & 0o777) != 0o600:
+                fail("Ingress configuration must be root-owned, mode 0600, and not a symlink.")
+        with open(path, encoding="utf-8") as source:
+            config = json.load(source)
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f"Reading ingress configuration failed: {error}")
+    keys = {"lanInterface", "lanSource", "lanAddress", "lanPort", "tailscaleAddress", "tailscalePort"}
+    if not isinstance(config, dict) or set(config) != keys:
+        fail("Ingress configuration has unexpected fields.")
+    try:
+        lan_address = ipaddress.IPv4Address(config["lanAddress"])
+        lan_source = ipaddress.IPv4Network(config["lanSource"], strict=True)
+        tailscale_address = ipaddress.IPv4Address(config["tailscaleAddress"])
+    except (ValueError, TypeError):
+        fail("Ingress configuration has invalid addresses.")
+    if (not isinstance(config["lanInterface"], str) or not config["lanInterface"] or
+            str(lan_source) != config["lanSource"] or not private(lan_address) or lan_address not in lan_source or
+            not private(lan_source.network_address) or not private(lan_source.broadcast_address) or
+            tailscale_address not in ipaddress.IPv4Network("100.64.0.0/10")):
+        fail("Ingress configuration has invalid LAN or Tailscale values.")
+    for key in ("lanPort", "tailscalePort"):
+        if type(config[key]) is not int or not 1 <= config[key] <= 65535:
+            fail("Ingress configuration has invalid ports.")
+    return config
+
+
+def parse_origin(value, tailnet=False):
     try:
         parsed = urlsplit(value)
         port = parsed.port or 443
     except ValueError:
-        fail("Origin must be a canonical HTTPS Tailscale origin.")
+        fail("Origin must be a canonical HTTPS origin.")
     host = parsed.hostname
-    if (parsed.scheme != "https" or not host or parsed.username or parsed.password or
-            parsed.path or parsed.query or parsed.fragment or port < 1 or port > 65535 or
-            not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.ts\.net", host)):
-        fail("Origin must be a canonical HTTPS Tailscale origin.")
+    if parsed.scheme != "https" or not host or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment or not 1 <= port <= 65535:
+        fail("Origin must be a canonical HTTPS origin.")
     canonical = f"https://{host}" + ("" if port == 443 else f":{port}")
-    if value != canonical:
-        fail("Origin must be a canonical HTTPS Tailscale origin.")
+    if value != canonical or (tailnet and not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.ts\.net", host)):
+        fail("Origin must be a canonical HTTPS origin.")
     return host, port
 
 
-def parse_address(value, network, description):
-    try:
-        address = ipaddress.IPv4Address(value)
-    except ipaddress.AddressValueError:
-        fail(f"{description} must be an IPv4 address in its required range.")
-    if network and address not in network:
-        fail(f"{description} must be an IPv4 address in its required range.")
-    return address
+def expected_rules(config):
+    return [
+        "-A VOIDSTATION -m conntrack --ctstate RELATED,ESTABLISHED --ctdir REPLY -j RETURN",
+        "-A VOIDSTATION -i br-voidstation -j RETURN",
+        f"-A VOIDSTATION -s 100.64.0.0/10 -i tailscale0 -p tcp -m tcp --dport 3000 -m conntrack --ctstate NEW,ESTABLISHED --ctorigdst {config['tailscaleAddress']} --ctorigdstport {config['tailscalePort']} --ctdir ORIGINAL -j RETURN",
+        f"-A VOIDSTATION -s {config['lanSource']} -i {config['lanInterface']} -p tcp -m tcp --dport 3443 -m conntrack --ctstate NEW,ESTABLISHED --ctorigdst {config['lanAddress']} --ctorigdstport {config['lanPort']} --ctdir ORIGINAL -j RETURN",
+        "-A VOIDSTATION -j DROP",
+    ]
 
 
-def parse_container_address(value):
-    address = parse_address(value, None, "Container address")
-    private_ranges = (ipaddress.IPv4Network("10.0.0.0/8"), ipaddress.IPv4Network("172.16.0.0/12"),
-                      ipaddress.IPv4Network("192.168.0.0/16"))
-    if not any(address in network for network in private_ranges):
-        fail("Container address must be RFC1918.")
-    return address
+def normalized_tokens(rule):
+    tokens = shlex.split(rule)
+    if "--ctstate" in tokens:
+        index = tokens.index("--ctstate") + 1
+        tokens[index] = ",".join(sorted(tokens[index].split(",")))
+    return tokens
+
+
+def verify_policy(config):
+    def rules(chain):
+        return [line for line in run(["iptables", "-w", "5", "-S", chain], f"Reading {chain} rules").stdout.splitlines() if line.startswith("-A ")]
+    forward = rules("FORWARD")
+    docker_user = rules("DOCKER-USER")
+    voidstation = rules("VOIDSTATION")
+    if not forward or forward[0] != "-A FORWARD -j DOCKER-USER":
+        fail("DOCKER-USER is not the first FORWARD rule.")
+    hook = "-A DOCKER-USER -o br-voidstation -j VOIDSTATION"
+    if not docker_user or docker_user[0] != hook:
+        fail("VOIDSTATION is not the first DOCKER-USER rule.")
+    expected = expected_rules(config)
+    if len(voidstation) != len(expected) or any(normalized_tokens(actual) != normalized_tokens(wanted) for actual, wanted in zip(voidstation, expected)):
+        fail("VOIDSTATION does not match the audited dual-ingress policy.")
 
 
 def route_overlaps_test_network():
@@ -89,60 +146,44 @@ def route_overlaps_test_network():
     if not isinstance(routes, list):
         fail("Reading routes failed.")
     for route in routes:
-        if not isinstance(route, dict):
-            continue
-        destination = route.get("dst")
-        # A default route does not reserve TEST-NET-1. The connected /30 added
-        # below takes precedence; any explicit destination route would conflict.
+        destination = route.get("dst") if isinstance(route, dict) else None
         if not isinstance(destination, str) or destination == "default":
             continue
         try:
-            existing = ipaddress.ip_network(destination, strict=False)
+            if ipaddress.ip_network(destination, strict=False).overlaps(TEST_NETWORK):
+                return True
         except ValueError:
             continue
-        if existing.version == 4 and existing.overlaps(TEST_NETWORK):
-            return True
     return False
 
 
-def dashboard_has_container_ip(container_ip):
-    result = run(["docker", "compose", "--project-name", "voidstation-app", "ps", "--quiet", "dashboard"],
-                 "Finding dashboard container")
-    container_id = result.stdout.strip()
-    if not re.fullmatch(r"[0-9a-f]{12,64}", container_id):
-        fail("Dashboard container is not uniquely running.")
-    inspection = run(["docker", "inspect", container_id, "--format", "{{json .NetworkSettings.Networks}}"],
-                     "Inspecting dashboard container")
-    try:
-        networks = json.loads(inspection.stdout)
-    except json.JSONDecodeError:
-        fail("Inspecting dashboard container failed.")
-    if not isinstance(networks, dict) or not any(
-            isinstance(network, dict) and network.get("IPAddress") == str(container_ip)
-            for network in networks.values()):
-        fail("Container address does not belong to the dashboard.")
+def dashboard_ips():
+    identifier = run(["docker", "compose", "--project-name", "voidstation-app", "ps", "--quiet", "dashboard"], "Finding dashboard container").stdout.strip()
+    worker = run(["docker", "compose", "--project-name", "voidstation-app", "ps", "--quiet", "assistant-worker"], "Finding worker container").stdout.strip()
+    if not re.fullmatch(r"[0-9a-f]{12,64}", identifier) or not re.fullmatch(r"[0-9a-f]{12,64}", worker):
+        fail("Dashboard and Assistant containers must be uniquely running.")
+    def inspect(container, label):
+        try:
+            networks = json.loads(run(["docker", "inspect", container, "--format", "{{json .NetworkSettings.Networks}}"], f"Inspecting {label}").stdout)
+            addresses = [network.get("IPAddress") for network in networks.values() if isinstance(network, dict) and network.get("IPAddress")]
+        except json.JSONDecodeError:
+            fail(f"Inspecting {label} failed.")
+        if len(addresses) != 1:
+            fail(f"{label} must have one internal address.")
+        return addresses[0]
+    return inspect(identifier, "dashboard"), inspect(worker, "Assistant")
 
 
-def first_rule_is_expected():
-    rules = run(["iptables", "-w", "5", "-S", "DOCKER-USER"], "Reading Docker ingress rule").stdout.splitlines()
-    appended = [line for line in rules if line.startswith("-A ")]
-    if not appended or appended[0] != EXPECTED_RULE:
-        fail("Docker ingress rule is not the first DOCKER-USER rule.")
-
-
-def rule_packets():
-    output = run(["iptables", "-w", "5", "-nvx", "-L", "DOCKER-USER", "--line-numbers"],
-                 "Reading Docker ingress counter").stdout
+def drop_packets():
+    output = run(["iptables", "-w", "5", "-nvx", "-L", "VOIDSTATION", "--line-numbers"], "Reading VOIDSTATION counter").stdout
     for line in output.splitlines():
-        match = re.match(r"\s*1\s+(\d+)\s+\d+\s+\S+", line)
+        match = re.match(r"\s*5\s+(\d+)\s+\d+\s+DROP\b", line)
         if match:
             return int(match.group(1))
-    fail("Docker ingress counter is unavailable.")
+    fail("VOIDSTATION drop counter is unavailable.")
 
 
-def direct_drop_packets(address):
-    # Docker can drop direct-container traffic in raw/PREROUTING, before
-    # DOCKER-USER. Only this exact target/bridge rule is usable as evidence.
+def raw_drop_packets(address):
     try:
         result = run(["iptables-save", "-c", "-t", "raw"], "Reading Docker direct-container drop", check=False)
     except VerificationError:
@@ -150,78 +191,38 @@ def direct_drop_packets(address):
     if result.returncode:
         return None
     expected = f"-A PREROUTING -d {address}/32 ! -i br-voidstation -j DROP"
-    matches = []
-    for line in result.stdout.splitlines():
-        match = re.fullmatch(r"\[(\d+):\d+\] (.+)", line)
-        if match and match.group(2) == expected:
-            matches.append(int(match.group(1)))
+    matches = [int(match.group(1)) for line in result.stdout.splitlines()
+               if (match := re.fullmatch(r"\[(\d+):\d+\] (.+)", line)) and match.group(2) == expected]
     return matches[0] if len(matches) == 1 else None
 
 
-def curl_arguments(host, port, address):
-    return ["curl", "--noproxy", "*", "--connect-timeout", "2", "--max-time", "3",
-            "--resolve", f"{host}:{port}:{address}", "--write-out", "%{http_code}",
-            "--output", "/dev/null", f"https://{host}:{port}/login"]
+def curl_arguments(host, port, address, scheme="https"):
+    resolve = ["--resolve", f"{host}:{port}:{address}"] if host else []
+    url_host = host or address
+    return ["curl", "--noproxy", "*", "--connect-timeout", "2", "--max-time", "3", *resolve, "--write-out", "%{http_code}", "--output", "/dev/null", f"{scheme}://{url_host}:{port}/login"]
 
 
-def check_readiness(host, port, tailscale_ip):
-    result = run(curl_arguments(host, port, tailscale_ip), "TLS login readiness", check=False, timeout=5)
-    if result.returncode != 0 or result.stdout.strip() != "200":
-        fail("TLS login readiness failed.")
-
-
-def diagnostic_snapshot(namespace, host_veth, address):
-    # Earlier raw-table drops distinguish Docker's own protection from our
-    # FORWARD rule. Link counters and route lookup distinguish delivery failures.
-    commands = {
-        "raw": ["iptables-save", "-c", "-t", "raw"],
-        "forward": ["iptables", "-w", "5", "-nvx", "-L", "FORWARD", "--line-numbers"],
-        "host-link": ["ip", "-stats", "link", "show", "dev", host_veth],
-        "namespace-links": ["ip", "-n", namespace, "-stats", "link", "show"],
-        "route": ["ip", "-4", "route", "get", str(address), "from", "192.0.2.2", "iif", host_veth],
-    }
-    snapshot = {}
-    for name, command in commands.items():
-        try:
-            result = run(command, "Reading ingress diagnostics", check=False)
-            snapshot[name] = {"exit": result.returncode, "output": result.stdout, "error": result.stderr}
-        except VerificationError as error:
-            snapshot[name] = {"error": str(error)}
-    return snapshot
-
-
-def check_blocked(namespace, host, port, address, label, allow_raw_drop=False):
-    before = rule_packets()
-    raw_before = direct_drop_packets(address) if allow_raw_drop else None
-    result = run(["ip", "netns", "exec", namespace, *curl_arguments(host, port, address)],
-                 "Blocked ingress probe", check=False, timeout=5)
-    after = rule_packets()
-    raw_after = direct_drop_packets(address) if allow_raw_drop else None
+def check_blocked(namespace, label, command, direct_address=None):
+    before = drop_packets()
+    raw_before = raw_drop_packets(direct_address) if direct_address else None
+    result = run(["ip", "netns", "exec", namespace, *command], "Blocked ingress probe", check=False, timeout=5)
+    after = drop_packets()
+    raw_after = raw_drop_packets(direct_address) if direct_address else None
     if result.returncode != 28:
-        fail(f"{label}: Blocked ingress probe did not time out (curl exit={result.returncode}).")
-    if after <= before:
-        if raw_before is not None and raw_after is not None and raw_after > raw_before:
-            print(f"PASS: {label}: timeout confirmed, Docker raw PREROUTING packets {raw_before} -> {raw_after}.", flush=True)
-            return raw_after
-        fail(f"{label}: Docker ingress counter did not increase (before={before}, after={after}, curl exit={result.returncode}); no matching earlier drop was proven.")
-    print(f"PASS: {label}: timeout confirmed, ingress packets {before} -> {after}.", flush=True)
-    return after
+        fail(f"{label}: timeout was not proven.")
+    if after > before:
+        print(f"PASS: {label}: untrusted namespace traffic timed out, VOIDSTATION DROP packets {before} -> {after}.", flush=True)
+        return
+    if raw_before is not None and raw_after is not None and raw_after > raw_before:
+        print(f"PASS: {label}: untrusted namespace traffic timed out, Docker raw direct-container DROP packets {raw_before} -> {raw_after}.", flush=True)
+        return
+    fail(f"{label}: timeout and a matching DROP counter increase were not both proven.")
 
 
 def cleanup(namespace, host_veth, namespace_created, veth_created):
-    commands = []
-    if veth_created:
-        commands.append((["ip", "link", "del", "dev", host_veth], host_veth))
-    if namespace_created:
-        commands.append((["ip", "netns", "del", namespace], namespace))
     failures = []
-    for command, name in commands:
-        try:
-            result = run(command, "Removing test network object", check=False,
-                         timeout=2, respect_deadline=False)
-            if result.returncode:
-                failures.append(name)
-        except VerificationError:
+    for command, name in ((["ip", "link", "del", "dev", host_veth], host_veth) if veth_created else (None, None), (["ip", "netns", "del", namespace], namespace) if namespace_created else (None, None)):
+        if command and run(command, "Removing test network object", check=False, timeout=2, respect_deadline=False).returncode:
             failures.append(name)
     if failures:
         fail("Cleanup failed; inspect only these test objects: " + ", ".join(failures))
@@ -229,12 +230,11 @@ def cleanup(namespace, host_veth, namespace_created, veth_created):
 
 def arguments():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--origin", required=True)
-    parser.add_argument("--tailscale-ip", required=True)
-    parser.add_argument("--container-ip", required=True)
+    parser.add_argument("--tailscale-origin", required=True)
+    parser.add_argument("--lan-origin", required=True)
+    parser.add_argument("--config", default="/etc/voidstation/ingress.json")
+    parser.add_argument("--test-config", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--report-results", action="store_true")
-    parser.add_argument("--diagnostics", action="store_true",
-                        help="Include private read-only firewall/link/route snapshots; keep output local.")
     return parser.parse_args()
 
 
@@ -244,23 +244,23 @@ def main():
     args = arguments()
     if run(["id", "-u"], "Checking root access").stdout.strip() != "0":
         fail("Run this owner-authorized check as root.")
-    host, port = parse_origin(args.origin)
-    tailscale_ip = parse_address(args.tailscale_ip, ipaddress.IPv4Network("100.64.0.0/10"), "Tailscale address")
-    container_ip = parse_container_address(args.container_ip)
-    dashboard_has_container_ip(container_ip)
-    first_rule_is_expected()
-    check_readiness(host, port, tailscale_ip)
+    config = read_config(args.config, args.test_config)
+    tail_host, tail_port = parse_origin(args.tailscale_origin, tailnet=True)
+    if tail_port != config["tailscalePort"]:
+        fail("Tailscale origin port must match the configured Tailscale port.")
+    lan_host, lan_origin_port = parse_origin(args.lan_origin)
+    if lan_host != config["lanAddress"] or lan_origin_port != config["lanPort"]:
+        fail("LAN origin must be the configured LAN IP and port.")
+    verify_policy(config)
     if route_overlaps_test_network():
         fail("Existing route overlaps the reserved test subnet.")
-
+    dashboard, worker = dashboard_ips()
     token = secrets.token_hex(3)
     namespace, host_veth, namespace_veth = f"vs-check-{token}", f"vsch{token}", f"vscn{token}"
     namespace_created = veth_created = False
     try:
-        run(["ip", "netns", "add", namespace], "Creating test namespace")
-        namespace_created = True
-        run(["ip", "link", "add", host_veth, "type", "veth", "peer", "name", namespace_veth], "Creating test veth")
-        veth_created = True
+        run(["ip", "netns", "add", namespace], "Creating test namespace"); namespace_created = True
+        run(["ip", "link", "add", host_veth, "type", "veth", "peer", "name", namespace_veth], "Creating test veth"); veth_created = True
         run(["ip", "link", "set", namespace_veth, "netns", namespace], "Moving test veth")
         run(["ip", "addr", "add", "192.0.2.1/30", "dev", host_veth], "Configuring test veth")
         run(["ip", "link", "set", host_veth, "up"], "Enabling test veth")
@@ -268,39 +268,19 @@ def main():
         run(["ip", "-n", namespace, "addr", "add", "192.0.2.2/30", "dev", namespace_veth], "Configuring test namespace")
         run(["ip", "-n", namespace, "link", "set", namespace_veth, "up"], "Enabling test namespace veth")
         run(["ip", "-n", namespace, "route", "add", "default", "via", "192.0.2.1", "dev", namespace_veth], "Configuring test namespace route")
-        failures = []
-        container_packets = 0
-        for label, target_port, address in (("tailscale-publication", port, tailscale_ip),
-                                            ("container-address", 3000, container_ip)):
-            if args.diagnostics:
-                print(json.dumps({"probe": label, "phase": "before", "diagnostics":
-                                  diagnostic_snapshot(namespace, host_veth, address)}), flush=True)
-            try:
-                container_packets = check_blocked(namespace, host, target_port, address, label,
-                                                  allow_raw_drop=(label == "container-address"))
-            except VerificationError as error:
-                failures.append(str(error))
-            finally:
-                if args.diagnostics:
-                    print(json.dumps({"probe": label, "phase": "after", "diagnostics":
-                                      diagnostic_snapshot(namespace, host_veth, address)}), flush=True)
+        check_blocked(namespace, "unauthorized-interface-and-source-to-tailscale", curl_arguments(tail_host, tail_port, config["tailscaleAddress"]))
+        check_blocked(namespace, "unauthorized-interface-and-source-to-lan", curl_arguments(lan_host, lan_origin_port, config["lanAddress"]))
+        check_blocked(namespace, "direct-dashboard-backend", curl_arguments(tail_host, 3000, dashboard), dashboard)
+        check_blocked(namespace, "direct-LAN-backend", curl_arguments(lan_host, 3443, dashboard), dashboard)
+        check_blocked(namespace, "direct-Assistant-worker", curl_arguments(None, 3001, worker, scheme="http"), worker)
     finally:
         cleanup(namespace, host_veth, namespace_created, veth_created)
-    if failures:
-        fail("; ".join(failures))
-    if args.report_results:
-        print(f"PASS: readiness=200, tailscale-blocked=yes, container-blocked=yes, rule-packets={container_packets}; owner must still check desktop/off-LAN access.")
-    else:
-        print("PASS: local readiness and blocked traffic verified; owner must still check desktop/off-LAN access.")
-
-
-def interrupt(_signal, _frame):
-    raise KeyboardInterrupt
+    print("PASS: audited dual-ingress rules and untrusted-veth rejections verified. This namespace is not a physical LAN or Tailscale client; the owner must verify allowed LAN and off-LAN Tailscale HTTPS paths separately.")
 
 
 if __name__ == "__main__":
-    signal.signal(signal.SIGINT, interrupt)
-    signal.signal(signal.SIGTERM, interrupt)
+    signal.signal(signal.SIGINT, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     try:
         main()
     except KeyboardInterrupt:

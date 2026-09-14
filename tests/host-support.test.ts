@@ -33,38 +33,110 @@ async function run(script: string, args: string[], environment: Record<string, s
   return { exitCode, stdout, stderr };
 }
 
-async function ingressFixtures(bin: string) {
-  await fake(bin, "id", "echo 0");
-  await fake(bin, "iptables", String.raw`
-printf '%s\n' "$*" >> "$COMMAND_LOG"
-if [[ "$*" == "-w -S DOCKER-USER" ]]; then printf '%s\n' "$IPTABLES_DOCKER_USER"; exit "$IPTABLES_DOCKER_USER_STATUS"; fi
-if [[ "$*" == "-w -S FORWARD" ]]; then printf '%s\n' "$IPTABLES_FORWARD"; exit 0; fi
-`);
-  await fake(bin, "tailscale", "exit 99");
-  await fake(bin, "docker", "exit 99");
-  await fake(bin, "systemctl", "exit 99");
-  await fake(bin, "openssl", "exit 99");
-}
-
 afterEach(async () => {
   await Promise.all(workspaces.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
+const policyRules = [
+  "-A VOIDSTATION -m conntrack --ctstate RELATED,ESTABLISHED --ctdir REPLY -j RETURN",
+  "-A VOIDSTATION -i br-voidstation -j RETURN",
+  "-A VOIDSTATION -s 100.64.0.0/10 -i tailscale0 -p tcp -m tcp --dport 3000 -m conntrack --ctstate NEW,ESTABLISHED --ctorigdst 100.101.102.103 --ctorigdstport 8443 --ctdir ORIGINAL -j RETURN",
+  "-A VOIDSTATION -s 192.168.50.0/24 -i enp1s0 -p tcp -m tcp --dport 3443 -m conntrack --ctstate NEW,ESTABLISHED --ctorigdst 192.168.50.10 --ctorigdstport 3000 --ctdir ORIGINAL -j RETURN",
+  "-A VOIDSTATION -j DROP",
+];
+const ingressHook = "-A DOCKER-USER -o br-voidstation -j VOIDSTATION";
+const legacyRule = "-A DOCKER-USER ! -i tailscale0 -o br-voidstation -m conntrack --ctstate NEW -j DROP";
+
+async function ingressFixtures(bin: string) {
+  await fake(bin, "id", "echo 0");
+  await fake(bin, "python3", "if [[ $# == 2 ]]; then if [[ -v PYTHON_SOURCE ]]; then cat > \"$PYTHON_SOURCE\"; else cat > /dev/null; fi; printf '%s\\n' enp1s0 192.168.50.0/24 192.168.50.10 3000 100.101.102.103 8443; fi");
+  await fake(bin, "iptables", `
+printf '%s\\n' "$*" >> "$COMMAND_LOG"
+case "$*" in
+  "-w -S FORWARD") printf '%s\n' "$IPTABLES_FORWARD"; exit 0 ;;
+  "-w -S DOCKER-USER") printf '%s\n' "$IPTABLES_DOCKER_USER"; exit "\${IPTABLES_DOCKER_USER_STATUS:-0}" ;;
+  "-w -S VOIDSTATION") printf '%s\n' "$IPTABLES_VOIDSTATION"; exit "\${IPTABLES_VOIDSTATION_STATUS:-1}" ;;
+esac
+`);
+}
+
 describe("host ingress deployment command", () => {
-  it("adds only the missing first jumps and keeps the audited forward rules in place", async () => {
+  it("asks iproute2 for detailed link data before accepting a LAN interface", async () => {
+    const { bin, directory, log } = await workspace();
+    const parser = join(directory, "ingress-parser.py");
+    await ingressFixtures(bin);
+    const result = await run("scripts/host/voidstation-ingress.sh", [], {
+      PATH: `${bin}:${process.env.PATH}`, COMMAND_LOG: log, PYTHON_SOURCE: parser,
+      IPTABLES_FORWARD: "-P FORWARD DROP\n-A FORWARD -j DOCKER-FORWARD",
+      IPTABLES_DOCKER_USER: "-N DOCKER-USER", IPTABLES_DOCKER_USER_STATUS: "0",
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(await readFile(parser, "utf8")).toContain('["ip", "-details", "-j", "link", "show", "dev", interface]');
+  });
+
+  it("installs the complete restrictive chain before it hooks Docker without flushing other rules", async () => {
     const { bin, log } = await workspace();
     await ingressFixtures(bin);
     const result = await run("scripts/host/voidstation-ingress.sh", [], {
       PATH: `${bin}:${process.env.PATH}`, COMMAND_LOG: log,
+      IPTABLES_FORWARD: "-P FORWARD DROP\n-A FORWARD -j DOCKER-FORWARD",
       IPTABLES_DOCKER_USER: "-N DOCKER-USER", IPTABLES_DOCKER_USER_STATUS: "0",
-      IPTABLES_FORWARD: "-P FORWARD DROP\n-A FORWARD -j DOCKER-USER\n-A FORWARD -j DOCKER-FORWARD\n-A FORWARD -j ts-forward",
     });
 
     expect(result.exitCode).toBe(0);
     const commands = await readFile(log, "utf8");
-    expect(commands).toContain("-w -I DOCKER-USER 1 ! -i tailscale0 -o br-voidstation -m conntrack --ctstate NEW -j DROP");
-    expect(commands).not.toContain("-w -I FORWARD 1 -j DOCKER-USER");
+    for (const rule of policyRules) expect(commands).toContain(`-w ${rule}`);
+    expect(commands).toContain("-w -I DOCKER-USER 1 -o br-voidstation -j VOIDSTATION");
+    expect(commands).toContain("-w -I FORWARD 1 -j DOCKER-USER");
+    expect(commands.indexOf("-A VOIDSTATION -j DROP")).toBeLessThan(commands.indexOf("-I DOCKER-USER 1 -o br-voidstation -j VOIDSTATION"));
     expect(commands).not.toContain("-F");
+  });
+
+  it("refuses the legacy broad drop until the owner explicitly requests migration", async () => {
+    const { bin, log } = await workspace();
+    await ingressFixtures(bin);
+    const result = await run("scripts/host/voidstation-ingress.sh", [], {
+      PATH: `${bin}:${process.env.PATH}`, COMMAND_LOG: log,
+      IPTABLES_FORWARD: "-P FORWARD DROP\n-A FORWARD -j DOCKER-USER",
+      IPTABLES_DOCKER_USER: legacyRule,
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toMatch(/--migrate/);
+    expect(await readFile(log, "utf8")).not.toContain(" -I ");
+  });
+
+  it("migrates by adding the restrictive hook before removing the legacy rule", async () => {
+    const { bin, log } = await workspace();
+    await ingressFixtures(bin);
+    const result = await run("scripts/host/voidstation-ingress.sh", ["--migrate"], {
+      PATH: `${bin}:${process.env.PATH}`, COMMAND_LOG: log,
+      IPTABLES_FORWARD: "-P FORWARD DROP\n-A FORWARD -j DOCKER-USER",
+      IPTABLES_DOCKER_USER: legacyRule,
+    });
+
+    expect(result.exitCode).toBe(0);
+    const commands = await readFile(log, "utf8");
+    expect(commands.indexOf("-I DOCKER-USER 1 -o br-voidstation -j VOIDSTATION")).toBeLessThan(
+      commands.indexOf("-D DOCKER-USER ! -i tailscale0 -o br-voidstation -m conntrack --ctstate NEW -j DROP"),
+    );
+  });
+
+  it("checks a normalized existing chain without changing firewall state", async () => {
+    const { bin, log } = await workspace();
+    await ingressFixtures(bin);
+    const normalized = policyRules.map((rule) => rule.replace("NEW,ESTABLISHED", "ESTABLISHED,NEW")).join("\n");
+    const result = await run("scripts/host/voidstation-ingress.sh", ["--check"], {
+      PATH: `${bin}:${process.env.PATH}`, COMMAND_LOG: log,
+      IPTABLES_FORWARD: "-P FORWARD DROP\n-A FORWARD -j DOCKER-USER",
+      IPTABLES_DOCKER_USER: ingressHook,
+      IPTABLES_VOIDSTATION: normalized, IPTABLES_VOIDSTATION_STATUS: "0",
+    });
+
+    expect(result.exitCode).toBe(0);
+    const commands = await readFile(log, "utf8");
+    expect(commands).not.toMatch(/ -[INADF] /);
   });
 
   it("refuses a non-first existing DOCKER-USER forward jump instead of reordering rules", async () => {
@@ -72,8 +144,9 @@ describe("host ingress deployment command", () => {
     await ingressFixtures(bin);
     const result = await run("scripts/host/voidstation-ingress.sh", [], {
       PATH: `${bin}:${process.env.PATH}`, COMMAND_LOG: log,
-      IPTABLES_DOCKER_USER: "-N DOCKER-USER", IPTABLES_DOCKER_USER_STATUS: "0",
       IPTABLES_FORWARD: "-P FORWARD DROP\n-A FORWARD -j DOCKER-FORWARD\n-A FORWARD -j DOCKER-USER",
+      IPTABLES_DOCKER_USER: ingressHook,
+      IPTABLES_VOIDSTATION: policyRules.join("\n"), IPTABLES_VOIDSTATION_STATUS: "0",
     });
 
     expect(result.exitCode).not.toBe(0);
@@ -250,6 +323,8 @@ describe("host support units", () => {
     expect(unit).toContain("Before=docker.service");
     expect(unit).toContain("PartOf=docker.service");
     expect(unit).toContain("RequiredBy=docker.service");
+    expect(unit).toContain("After=local-fs.target network-online.target");
+    expect(unit).not.toContain("tailscaled");
     expect(unit).not.toContain("ExecStop=");
   });
 

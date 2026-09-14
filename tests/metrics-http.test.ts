@@ -4,6 +4,7 @@ import { request as httpRequest } from "node:http";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
+import { checkServerIdentity } from "node:tls";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -14,9 +15,12 @@ let app: ChildProcess | undefined;
 let directory: string;
 let dataDirectory: string;
 let origin: string;
+let lanOrigin: string;
 let output = "";
 let port: number;
+let lanPort: number;
 let certificate: Buffer;
+let lanCertificate: Buffer;
 const password = "test-owner-password-7";
 const recoveredPassword = "recovered-owner-password-7";
 const hostname = "voidstation.test-tailnet.ts.net";
@@ -28,13 +32,14 @@ function owner(command: "bootstrap" | "recover", secret = password) {
   });
 }
 
-function request(path: string, init: RequestInit = {}, cookie = ""): Promise<Response> {
+function requestAt(target: string, targetPort: number, ca: Buffer, path: string, init: RequestInit = {}, cookie = "", servername?: string): Promise<Response> {
   return new Promise((resolve, reject) => {
     const headers = new Headers(init.headers);
-    if (!headers.has("host")) headers.set("host", new URL(origin).host);
+    if (!headers.has("host")) headers.set("host", new URL(target).host);
     if (cookie) headers.set("cookie", cookie);
     const req = httpsRequest({
-      hostname: "127.0.0.1", port, servername: hostname, ca: certificate,
+      hostname: "127.0.0.1", port: targetPort, servername: servername ?? "", ca,
+      ...(servername ? {} : { checkServerIdentity: (_name, cert) => checkServerIdentity("127.0.0.1", cert) }),
       path, method: init.method ?? "GET", headers: Object.fromEntries(headers),
     }, (res) => {
       const chunks: Buffer[] = [];
@@ -49,10 +54,18 @@ function request(path: string, init: RequestInit = {}, cookie = ""): Promise<Res
         }));
       });
     });
-    req.on("error", reject);
+    req.on("error", (error) => reject(new Error(`${target} (${servername ?? "no SNI"}): ${error.message}`)));
     req.setTimeout(5000, () => req.destroy(new Error("Request timed out")));
     req.end(init.body?.toString());
   });
+}
+
+function request(path: string, init: RequestInit = {}, cookie = "") {
+  return requestAt(origin, port, certificate, path, init, cookie, hostname);
+}
+
+function lanRequest(path: string, init: RequestInit = {}, cookie = "") {
+  return requestAt(lanOrigin, lanPort, lanCertificate, path, init, cookie);
 }
 
 function login(secret = password, headers: Record<string, string> = {}) {
@@ -83,14 +96,28 @@ beforeAll(async () => {
   if (!address || typeof address === "string") throw new Error("No test port");
   port = address.port;
   await new Promise<void>((resolve, reject) => reservation.close((error) => error ? reject(error) : resolve()));
+  const lanReservation = createServer();
+  lanReservation.listen(0, "127.0.0.1");
+  await once(lanReservation, "listening");
+  const lanAddress = lanReservation.address();
+  if (!lanAddress || typeof lanAddress === "string") throw new Error("No LAN test port");
+  lanPort = lanAddress.port;
+  await new Promise<void>((resolve, reject) => lanReservation.close((error) => error ? reject(error) : resolve()));
   origin = `https://${hostname}:${port}`;
+  lanOrigin = `https://127.0.0.1:${lanPort}`;
   await mkdir(join(directory, "auth"), { mode: 0o700 });
   const certPath = join(directory, "cert.pem");
   const keyPath = join(directory, "key.pem");
+  const lanCertPath = join(directory, "lan-cert.pem");
+  const lanKeyPath = join(directory, "lan-key.pem");
   execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
     "-subj", `/CN=${hostname}`, "-addext", `subjectAltName=DNS:${hostname}`,
     "-keyout", keyPath, "-out", certPath], { stdio: "ignore" });
+  execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+    "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1",
+    "-keyout", lanKeyPath, "-out", lanCertPath], { stdio: "ignore" });
   certificate = await readFile(certPath);
+  lanCertificate = await readFile(lanCertPath);
   owner("bootstrap");
 
   app = spawn(process.execPath, ["scripts/https-server.mjs"], {
@@ -98,9 +125,10 @@ beforeAll(async () => {
       ...process.env,
       NODE_ENV: "production",
       HOSTNAME: "127.0.0.1", PORT: String(port),
-      VOIDSTATION_ORIGIN: origin,
+      VOIDSTATION_ORIGIN: origin, VOIDSTATION_LAN_ORIGIN: lanOrigin, VOIDSTATION_LAN_PORT: String(lanPort),
       VOIDSTATION_AUTH_DB: join(directory, "auth", "auth.sqlite"),
       VOIDSTATION_TLS_CERT: certPath, VOIDSTATION_TLS_KEY: keyPath,
+      VOIDSTATION_LAN_TLS_CERT: lanCertPath, VOIDSTATION_LAN_TLS_KEY: lanKeyPath,
       VOIDSTATION_HOST_PROC: directory,
       VOIDSTATION_HOST_ROOT_FS: directory,
       VOIDSTATION_HOST_DATA_FS: dataDirectory,
@@ -133,6 +161,22 @@ afterAll(async () => {
   }
   if (directory) await rm(directory, { recursive: true, force: true });
   if (dataDirectory) await rm(dataDirectory, { recursive: true, force: true });
+});
+
+it("serves the same authenticated application through separately trusted Tailscale and LAN HTTPS hosts", async () => {
+  const tailscaleLogin = await login();
+  const lanLogin = await lanRequest("/api/auth/login", {
+    method: "POST", headers: { origin: lanOrigin, "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ password }),
+  });
+  expect(tailscaleLogin.status).toBe(200);
+  expect(lanLogin.status).toBe(200);
+  const lanCookie = lanLogin.headers.get("set-cookie")!.split(";")[0];
+  expect((await lanRequest("/api/metrics", {}, lanCookie)).status).toBe(200);
+  expect((await request("/api/metrics", {}, lanCookie)).status).toBe(200);
+  expect((await lanRequest("/api/auth/logout", { method: "POST", headers: { origin } }, lanCookie)).status).toBe(403);
+  expect((await request("/api/auth/logout", { method: "POST", headers: { origin: lanOrigin } }, lanCookie)).status).toBe(403);
+  expect((await lanRequest("/api/metrics", { headers: { host: new URL(origin).host } }, lanCookie)).status).toBe(421);
 });
 
 it("exposes no pages or measurements before owner login, including future routes and RSC requests", async () => {
@@ -175,6 +219,7 @@ it("does not cache authenticated pages", async () => {
 });
 
 it("rejects forged session cookies", async () => {
+  owner("recover");
   const cookie = await session();
   expect((await request("/api/metrics", {}, `${cookie}tampered`)).status).toBe(401);
 });
@@ -267,7 +312,6 @@ it("rejects missing, forged and cross-site origins for login and authenticated m
     {}, { origin: "null" }, { origin: "https://evil.invalid" },
     { origin, "sec-fetch-site": "cross-site" },
     { origin: "http://" + new URL(origin).host },
-    { origin: "https://evil.invalid", "x-forwarded-host": "evil.invalid", "x-forwarded-proto": "https" },
   ];
   for (const headers of rejectedHeaders) {
     for (const path of ["/api/auth/login", "/api/auth/logout", "/api/metrics", "/api/assistant", "/assistant"]) {
@@ -277,7 +321,21 @@ it("rejects missing, forged and cross-site origins for login and authenticated m
     }
   }
   expect((await request("/api/metrics", {}, cookie)).status).toBe(200);
-  expect((await request("/api/metrics", { headers: { host: "evil.invalid", "x-forwarded-host": new URL(origin).host } }, cookie)).status).toBe(421);
+  expect((await request("/api/metrics", { headers: { host: "evil.invalid", "x-forwarded-host": new URL(origin).host } }, cookie)).status).toBe(400);
+});
+
+it("rejects client forwarding and Tailscale headers at each raw TLS listener", async () => {
+  const cookie = await session();
+  for (const [send, headers] of [[request, { "forwarded": "for=evil.invalid" }], [request, { "x-forwarded-for": "100.64.0.1" }],
+    [lanRequest, { "tailscale-user-login": "forged@invalid" }]] as const) {
+    const response = await send("/api/metrics", { headers }, cookie);
+    expect(response.status).toBe(400);
+    expect(await response.text()).not.toContain("observedAt");
+  }
+  const originSpoof = await request("/api/auth/logout", {
+    method: "POST", headers: { origin: lanOrigin, "x-forwarded-host": new URL(lanOrigin).host },
+  }, cookie);
+  expect(originSpoof.status).toBe(400);
 });
 
 it("logs out server-side and rejects replay of the revoked cookie", async () => {
@@ -290,25 +348,27 @@ it("logs out server-side and rejects replay of the revoked cookie", async () => 
   expect((await request("/", {}, cookie)).headers.get("location")).toBe(`${origin}/login`);
 });
 
-it("recovery invalidates every existing session without restarting the application", async () => {
+it("recovery invalidates Tailscale and LAN sessions without restarting the application", async () => {
   owner("recover");
-  const first = await session();
-  const second = await session();
-  expect(second).not.toBe(first);
+  const tailscaleCookie = await session();
+  const lanLogin = await lanRequest("/api/auth/login", {
+    method: "POST", headers: { origin: lanOrigin, "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ password }),
+  });
+  expect(lanLogin.status).toBe(200);
+  const lanCookie = lanLogin.headers.get("set-cookie")!.split(";")[0];
+  expect(lanCookie).not.toBe(tailscaleCookie);
   owner("recover", recoveredPassword);
-  for (const cookie of [first, second]) {
-    expect((await request("/api/metrics", {}, cookie)).status).toBe(401);
-  }
+  expect((await request("/api/metrics", {}, tailscaleCookie)).status).toBe(401);
+  expect((await lanRequest("/api/metrics", {}, lanCookie)).status).toBe(401);
   expect((await login()).status).toBe(401);
   const fresh = await session(recoveredPassword);
   expect((await request("/api/metrics", {}, fresh)).status).toBe(200);
 });
 
-it("limits concurrent password attempts globally despite spoofed network identities", async () => {
+it("limits concurrent password attempts globally", async () => {
   owner("recover");
-  const attempts = await Promise.all(Array.from({ length: 7 }, (_, index) => login("incorrect-password", {
-    "x-forwarded-for": `100.64.0.${index + 1}`, "tailscale-user-login": `forged${index}@invalid`,
-  })));
+  const attempts = await Promise.all(Array.from({ length: 7 }, () => login("incorrect-password")));
   expect(attempts.filter((response) => response.status === 401)).toHaveLength(5);
   expect(attempts.filter((response) => response.status === 429)).toHaveLength(2);
   const limited = await login();
@@ -336,7 +396,7 @@ it("allows only login's build assets before authentication, not arbitrary files 
     "x-middleware-subrequest": "src/proxy:src/proxy:src/proxy:src/proxy:src/proxy",
     "x-nextjs-data": "1", "x-forwarded-proto": "https", "x-forwarded-host": new URL(origin).host,
   } });
-  expect(bypass.status).toBe(401);
+  expect(bypass.status).toBe(400);
   const rsc = await request("/?_rsc=test", { headers: { RSC: "1" } });
   expect(await rsc.text()).not.toMatch(/Home Server|observedAt|90061|8589934592/);
   expect(rsc.status).toBe(307);

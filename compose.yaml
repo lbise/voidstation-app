@@ -2,6 +2,13 @@ name: voidstation-app
 
 x-voidstation:
   expected_data_filesystem_uuid: "${VOIDSTATION_DATA_FILESYSTEM_UUID:?Set VOIDSTATION_DATA_FILESYSTEM_UUID in .env}"
+  # Host ingress policy metadata. The ingress service reads the same values from
+  # /etc/voidstation/ingress.json; it does not infer trusted LANs from Docker.
+  lan_interface: "${VOIDSTATION_LAN_INTERFACE:?Set VOIDSTATION_LAN_INTERFACE in .env}"
+  lan_source: "${VOIDSTATION_LAN_SOURCE:?Set VOIDSTATION_LAN_SOURCE in .env}"
+  lan_bind_address: "${VOIDSTATION_LAN_BIND_ADDRESS:?Set VOIDSTATION_LAN_BIND_ADDRESS in .env}"
+  lan_https_port: "${VOIDSTATION_LAN_HTTPS_PORT:?Set VOIDSTATION_LAN_HTTPS_PORT in .env}"
+  lan_tls_directory: "${VOIDSTATION_LAN_TLS_DIRECTORY:?Set VOIDSTATION_LAN_TLS_DIRECTORY in .env}"
 
 networks:
   default:
@@ -17,12 +24,17 @@ services:
     user: "1000:1000"
     ports:
       - "${VOIDSTATION_TAILSCALE_BIND_ADDRESS:?Set VOIDSTATION_TAILSCALE_BIND_ADDRESS in .env}:${VOIDSTATION_PORT:?Set VOIDSTATION_PORT in .env}:3000"
+      - "${VOIDSTATION_LAN_BIND_ADDRESS:?Set VOIDSTATION_LAN_BIND_ADDRESS in .env}:${VOIDSTATION_LAN_HTTPS_PORT:?Set VOIDSTATION_LAN_HTTPS_PORT in .env}:3443"
     environment:
       # Docker needs a container-wide listener. The host publication remains the
       # configured Tailscale CGNAT address, never a wildcard or LAN address.
       HOSTNAME: "0.0.0.0"
       PORT: "3000"
       VOIDSTATION_ORIGIN: "${VOIDSTATION_ORIGIN:?Set VOIDSTATION_ORIGIN in .env}"
+      VOIDSTATION_LAN_ORIGIN: "${VOIDSTATION_LAN_ORIGIN:?Set VOIDSTATION_LAN_ORIGIN in .env}"
+      VOIDSTATION_LAN_PORT: "3443"
+      VOIDSTATION_LAN_TLS_CERT: "/run/voidstation-lan-tls/cert.pem"
+      VOIDSTATION_LAN_TLS_KEY: "/run/voidstation-lan-tls/key.pem"
       VOIDSTATION_TLS_CERT: "/run/voidstation-tls/cert.pem"
       VOIDSTATION_TLS_KEY: "/run/voidstation-tls/key.pem"
       VOIDSTATION_AUTH_DB: "/var/lib/voidstation/auth.sqlite"
@@ -79,6 +91,12 @@ services:
       - type: bind
         source: "${VOIDSTATION_TLS_DIRECTORY:?Set VOIDSTATION_TLS_DIRECTORY in .env}"
         target: /run/voidstation-tls
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${VOIDSTATION_LAN_TLS_DIRECTORY:?Set VOIDSTATION_LAN_TLS_DIRECTORY in .env}"
+        target: /run/voidstation-lan-tls
         read_only: true
         bind:
           create_host_path: false

@@ -1,15 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if (($#)); then
-  printf 'docker:up does not accept Compose overrides or service arguments.\n' >&2
-  exit 64
-fi
+cutover=false
+case "$#:$*" in
+  0:) ;;
+  1:--cutover) cutover=true ;;
+  *)
+    printf 'Usage: docker:up [--cutover]\n' >&2
+    printf 'Use --cutover only for the owner-authorized first LAN deployment.\n' >&2
+    exit 64
+    ;;
+esac
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-node scripts/deployment-preflight.mjs
+if [[ $cutover == true ]]; then
+  if [[ ${VOIDSTATION_INITIAL_LAN_CUTOVER:-} != approved ]]; then
+    printf 'Set VOIDSTATION_INITIAL_LAN_CUTOVER=approved for an owner-authorized initial LAN cutover.\n' >&2
+    exit 64
+  fi
+  node scripts/deployment-preflight.mjs --precutover
+else
+  # Routine updates must prove both existing paths before they replace images.
+  node scripts/deployment-preflight.mjs --predeploy
+fi
+
 printf 'Preflight passed. Building the dashboard and assistant-worker images.\n'
 docker compose --project-name voidstation-app build dashboard assistant-worker
 worker_image="$(docker compose --project-name voidstation-app images --quiet assistant-worker)"

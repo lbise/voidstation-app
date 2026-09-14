@@ -18,10 +18,8 @@ function isLoginAsset(pathname: string): boolean {
 // routes inherit this check without having to opt into a route group or wrapper.
 export function proxy(request: NextRequest) {
   try {
-    const origin = applicationOrigin();
-    if (request.headers.get("host") !== origin.host) {
-      return secureResponse(authError("Unrecognized host.", 421));
-    }
+    const origin = applicationOrigin(request);
+    if (!origin) return secureResponse(authError("Unrecognized host.", 421));
     const safe = request.method === "GET" || request.method === "HEAD";
     if (!safe && !hasValidOrigin(request)) {
       return secureResponse(authError("Request origin rejected.", 403));

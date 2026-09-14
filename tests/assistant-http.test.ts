@@ -17,8 +17,8 @@ async function create() {
   expect(response.status).toBe(201);
   return await response.json() as Detail;
 }
-async function history(id: string, cookie = phone) {
-  const response = await server.request(`${conversations}/${id}`, {}, cookie);
+async function history(id: string, cookie = phone, request = server.lanRequest) {
+  const response = await request(`${conversations}/${id}`, {}, cookie);
   expect(response.status).toBe(200);
   return await response.json() as Detail;
 }
@@ -59,7 +59,7 @@ async function settled(id: string) {
 beforeAll(async () => {
   server = await assistantServer();
   laptop = await server.session();
-  phone = await server.session();
+  phone = await server.lanSession();
 }, 40_000);
 afterAll(async () => { await server?.close(); });
 
@@ -75,12 +75,20 @@ it("keeps Assistant endpoints private and preserves Dashboard access when the wo
   expect((await server.request("/api/metrics", {}, phone)).status).toBe(200);
 });
 
-it("saves separate Pi conversations and resumes their history from another authenticated device", async () => {
+it("shares Assistant history between Tailscale and LAN HTTPS sessions", async () => {
   await server.startWorker();
   const first = await create();
   const second = await create();
+  const lanCreated = await server.lanMutate(conversations, "POST", {}, phone);
+  expect(lanCreated.status).toBe(201);
+  const lanConversation = await lanCreated.json() as Detail;
   expect(second.id).not.toBe(first.id);
   expect((await history(first.id)).messages).toEqual([]);
+  const lanStream = await server.lanStream(`${conversations}/${lanConversation.id}/events`, phone);
+  try {
+    expect(lanStream.status).toBe(200);
+    expect((await snapshot(lanStream.reader)).messages).toEqual([]);
+  } finally { lanStream.close(); }
   await server.fixture([{ text: "A saved reply." }]);
   const accepted = await server.mutate(`${conversations}/${first.id}/turns`, "POST", { text: "Remember this conversation" }, laptop);
   expect(accepted.status).toBe(202);
@@ -91,9 +99,9 @@ it("saves separate Pi conversations and resumes their history from another authe
     { role: "user", text: "Remember this conversation" }, { role: "assistant", text: "A saved reply." },
   ]);
   expect((await history(second.id)).messages).toEqual([]);
-  const list = await (await server.request(conversations, {}, phone)).json();
+  const list = await (await server.lanRequest(conversations, {}, phone)).json();
   expect(list.conversations.map((item: Detail) => item.id)).toEqual(expect.arrayContaining([first.id, second.id]));
-  expect(await history(first.id, laptop)).toEqual(detail);
+  expect(await history(first.id, laptop, server.request)).toEqual(detail);
 });
 
 it("rejects competing device turns and active deletion while work survives stream disconnection", async () => {

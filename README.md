@@ -16,7 +16,7 @@ npm run dev
 # Open https://localhost:3000 and trust the local development certificate.
 ```
 
-The password prompt does not echo input. Run `npm run owner -- recover` to replace the password and invalidate every session. Use a password of at least 12 characters. There is no registration or user-management UI. Production uses a dedicated persistent state directory and Tailscale-issued TLS certificates, not development certificates.
+The password prompt does not echo input. Run `npm run owner -- recover` to replace the password and invalidate every session. Use a password of at least 12 characters. There is no registration or user-management UI. Production uses dedicated persistent state, a Tailscale-issued certificate for remote access, and a dedicated private-CA certificate for LAN access. It never uses development certificates.
 
 ### Development over the local network
 
@@ -26,7 +26,7 @@ npm run dev:network
 
 This selects the Server's private LAN IPv4 address and prints an HTTPS URL on port 3443. No Tailscale is needed. The first run prompts for a separate debug owner password and creates a self-signed development certificate. Accept its certificate warning on the laptop. Debug state lives in `/tmp/voidstation-debug`, not the production authentication directory. Stop with Ctrl+C.
 
-If multiple LAN addresses are available, select one with `VOIDSTATION_DEV_HOST`. `VOIDSTATION_DEV_PORT` changes the port and `VOIDSTATION_DEV_STATE_DIR` changes the debug state directory. For example, `VOIDSTATION_DEV_PORT=3444 npm run dev:network` uses port 3444. Only use this development server on a trusted LAN. Production Compose access remains Tailscale-only. This command starts the web server, not the separate Assistant worker.
+If multiple LAN addresses are available, select one with `VOIDSTATION_DEV_HOST`. `VOIDSTATION_DEV_PORT` changes the port and `VOIDSTATION_DEV_STATE_DIR` changes the debug state directory. For example, `VOIDSTATION_DEV_PORT=3444 npm run dev:network` uses port 3444. Only use this development server on a trusted LAN. Production has separate LAN and Tailscale HTTPS listeners and is updated only through `./deploy.sh`. This command starts the development web server, not Docker or the production Assistant worker. It must not read or write production credentials, conversations, or authentication state.
 
 On Linux, the application reads this machine's `/proc/uptime` and `/proc/meminfo`. Other operating systems show unavailable measurements unless supplied with Linux-format source files. Local readings describe the development machine, not the home Server.
 
@@ -98,15 +98,15 @@ An unavailable measurement has `status: "unavailable"`, `value: null`, `observed
 
 ## Docker package
 
-Follow [the deployment runbook](docs/deployment.md) to configure the ignored `.env`, bootstrap the owner account, provision Tailscale HTTPS certificates, and verify filesystem identities. Publish only HTTPS on an explicit Tailscale IPv4 address. Tailscale clients are required at home and away. There is no LAN binding, HTTP backend, public registration, or Funnel.
+Follow [the deployment runbook](docs/deployment.md) to configure the ignored `.env`, reuse or bootstrap the owner account, provision both HTTPS certificates, and verify filesystem identities. Production serves the same application and durable state through explicit LAN and Tailscale HTTPS origins. LAN clients work with Tailscale disabled. The owner selected a reserved LAN IP on port 3000 and a dedicated private CA, with [one-time trust installation on Arch Linux and Android](docs/lan-certificates.md). No router DNS or DDNS change is needed. There is no plaintext application listener, public registration, or Funnel.
 
 ```sh
-npm run docker:check      # Validate TLS, Tailscale, container restrictions, mounts, and ports
-npm run docker:up        # Build, recheck, and update Dashboard plus assistant-worker
+npm run docker:check    # Validate both TLS paths, ingress policy, mounts, and ports
+./deploy.sh             # Check, build, and update Dashboard plus assistant-worker
 npm run docker:logs
 ```
 
-The single Tailscale publication targets Dashboard container port 3000, which accepts TLS only. `assistant-worker` has no host publication. The Dashboard calls it only on the Compose bridge at `http://assistant-worker:3001`, authenticated with a shared token file. The worker keeps conversation transcripts and provider refresh state in separate durable directories. A preflight-verified DOCKER-USER rule blocks non-Tailscale ingress to the dedicated `br-voidstation` bridge. The owner must authorize and persist that rule before deployment. A Tailscale destination address alone does not prevent routed LAN access. Choose a free HTTPS host port. Existing Dashboard bindings are permitted during updates; unrelated port owners are not displaced. See the runbook for the separately authorized cutover from the old two-port deployment.
+The Tailscale publication targets Dashboard container port 3000; the LAN publication targets container port 3443. Both are TLS-only listeners in one process, with separate certificates and listener-specific Host checks. `assistant-worker` has no host publication. The Dashboard calls it only on the Compose bridge at `http://assistant-worker:3001`, authenticated with a shared token file. Conversation transcripts and provider refresh state remain in separate durable worker directories. A persistent DOCKER-USER policy permits only the configured ingress interfaces, source ranges, and original published destinations to `br-voidstation`. It blocks unconfigured ingress and direct backend/worker access. The owner must authorize and persist that policy before cutover. Existing Dashboard bindings are permitted during updates; unrelated port owners are not displaced. See the runbook for pre/post checks and rollback that retains login and HTTPS.
 
 Both images run as UID/GID 1000. Compose drops capabilities, prevents gaining new privileges, uses a read-only root filesystem, and gives each service only its own writable state plus a restricted `/tmp` tmpfs. The Dashboard binds only the required narrow read-only inputs:
 
@@ -130,11 +130,11 @@ Do not expose Voidstation publicly or enable Tailscale Funnel. Do not assume hos
 
 ## Authentication boundary
 
-`src/proxy.ts` denies access by default, including future Assistant pages, API routes, RSC requests, and public files. Only login, its POST endpoint, and an asset allowlist generated from the login build are public. The metrics handler also validates its session before collecting Server measurements. The TLS launcher rejects unexpected Host headers and ignores forwarded identity and protocol headers.
+`src/proxy.ts` denies access by default, including future Assistant pages, API routes, RSC requests, and public files. Only login, its POST endpoint, and an asset allowlist generated from the login build are public. The metrics handler also validates its session before collecting Server measurements. Each TLS listener rejects unexpected Host headers and client-supplied forwarding or Tailscale identity headers. The application selects the configured origin corresponding to the request Host.
 
 Sessions are opaque random tokens in `__Host-voidstation-session`, with Secure, HttpOnly, SameSite=Strict, and an eight-hour lifetime. The private SQLite database stores token hashes, a salted scrypt password hash, and a persistent owner-wide login limiter. It contains no model-provider credentials. Five sign-in attempts per rolling 15-minute window bound password hashing, including concurrent attempts. Changing IP or forwarding headers cannot reset that limit. Administrative recovery resets the limiter and invalidates all sessions, including sessions in other running application processes sharing the database.
 
-All mutations require the exact configured HTTPS Origin, including login and logout. Cross-site and same-site-but-other-origin requests fail; missing Origin fails too. No HTTP-to-HTTPS redirect listener exists. Never use `next start` as a production shortcut.
+All mutations require the exact configured HTTPS Origin corresponding to the request Host, including login and logout. Supplying the other allowed origin is still rejected. Cross-site and same-site-but-other-origin requests fail; missing Origin fails too. No HTTP-to-HTTPS redirect listener exists. Never use `next start` as a production shortcut.
 
 ## Assistant verification
 
