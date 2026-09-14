@@ -23,6 +23,7 @@ type PreflightOptions = {
   renewalTarget?: boolean;
   postDeploy?: boolean;
   inspection?: (paths: Paths, endpoint: Endpoint) => Record<string, any>;
+  workerInspection?: (paths: Paths) => Record<string, any>;
   setup?: (paths: Paths, workspace: string) => Promise<Record<string, string | undefined> | void>;
 };
 
@@ -55,6 +56,8 @@ function lockedDashboard(paths: Paths): Record<string, any> {
           VOIDSTATION_HOST_PROC: "/host/proc",
           VOIDSTATION_HOST_ROOT_FS: "/host/filesystems/root",
           VOIDSTATION_HOST_DATA_FS: "/host/filesystems/data",
+          VOIDSTATION_WORKER_URL: "http://assistant-worker:3001",
+          VOIDSTATION_WORKER_TOKEN_FILE: "/run/voidstation-worker/token",
         },
         read_only: true,
         cap_drop: ["ALL"],
@@ -68,14 +71,57 @@ function lockedDashboard(paths: Paths): Record<string, any> {
           bind(paths.data, "/host/filesystems/data"),
           bind(paths.auth, "/var/lib/voidstation", false),
           bind(paths.tls, "/run/voidstation-tls"),
+          bind(paths.token, "/run/voidstation-worker/token"),
         ],
       },
+      "assistant-worker": lockedWorker(paths),
     },
+  };
+}
+
+function lockedWorker(paths: Paths): Record<string, any> {
+  return {
+    build: { context: `${process.cwd()}/worker`, dockerfile: "Dockerfile" },
+    command: null,
+    entrypoint: null,
+    networks: { default: null },
+    restart: "unless-stopped",
+    user: "1000:1000",
+    environment: {
+      VOIDSTATION_WORKER_HOST: "0.0.0.0",
+      VOIDSTATION_WORKER_PORT: "3001",
+      VOIDSTATION_WORKER_TOKEN_FILE: "/run/voidstation-worker/token",
+      VOIDSTATION_CONVERSATION_DIR: "/var/lib/voidstation/conversations",
+      VOIDSTATION_CREDENTIAL_DIR: "/var/lib/voidstation/credentials",
+    },
+    read_only: true,
+    cap_drop: ["ALL"],
+    security_opt: ["no-new-privileges:true"],
+    tmpfs: ["/tmp:size=16m,noexec,nosuid"],
+    volumes: [
+      bind(paths.token, "/run/voidstation-worker/token"),
+      bind(paths.conversations, "/var/lib/voidstation/conversations", false),
+      bind(paths.credentials, "/var/lib/voidstation/credentials", false),
+    ],
   };
 }
 
 function bind(source: string, target: string, readOnly = true) {
   return { type: "bind", source, target, read_only: readOnly, bind: { create_host_path: false } };
+}
+
+function deployedWorker(paths: Paths): Record<string, any> {
+  return {
+    Config: { User: "1000:1000", Labels: { "com.docker.compose.project": "voidstation-app", "com.docker.compose.service": "assistant-worker" } },
+    HostConfig: { ReadonlyRootfs: true, CapDrop: ["ALL"], SecurityOpt: ["no-new-privileges:true"] },
+    NetworkSettings: { Ports: { "3001/tcp": null } },
+    Mounts: [
+      { Type: "bind", Source: paths.token, Destination: "/run/voidstation-worker/token", RW: false },
+      { Type: "bind", Source: paths.conversations, Destination: "/var/lib/voidstation/conversations", RW: true },
+      { Type: "bind", Source: paths.credentials, Destination: "/var/lib/voidstation/credentials", RW: true },
+    ],
+    State: { Running: true, Restarting: false },
+  };
 }
 
 function deployedDashboard(paths: Paths, endpoint: Endpoint): Record<string, any> {
@@ -94,6 +140,7 @@ function deployedDashboard(paths: Paths, endpoint: Endpoint): Record<string, any
       { Type: "bind", Source: paths.data, Destination: "/host/filesystems/data", RW: false },
       { Type: "bind", Source: paths.auth, Destination: "/var/lib/voidstation", RW: true },
       { Type: "bind", Source: paths.tls, Destination: "/run/voidstation-tls", RW: false },
+      { Type: "bind", Source: paths.token, Destination: "/run/voidstation-worker/token", RW: false },
     ],
     State: { Running: true, Restarting: false },
   };
@@ -106,12 +153,14 @@ async function runPreflight(configuration: (paths: Paths) => object, options: Pr
   const root = join(workspace, "root");
   const auth = join(workspace, "auth");
   const tls = join(workspace, "tls");
+  const token = join(workspace, "worker-token");
+  const conversations = join(workspace, "conversations");
+  const credentials = join(workspace, "credentials");
   const data = await mkdtemp(join("/dev/shm", "voidstation-preflight-data-"));
   workspaces.push(data);
-  const paths = { root, data, auth, tls };
-  await Promise.all([mkdir(bin), mkdir(root), mkdir(auth, { mode: 0o700 }), mkdir(tls, { mode: 0o700 })]);
-  await chmod(auth, 0o700);
-  await chmod(tls, 0o700);
+  const paths = { root, data, auth, tls, token, conversations, credentials };
+  await Promise.all([mkdir(bin), mkdir(root), mkdir(auth, { mode: 0o700 }), mkdir(tls, { mode: 0o700 }), mkdir(conversations, { mode: 0o700 }), mkdir(credentials, { mode: 0o700 })]);
+  await Promise.all([chmod(auth, 0o700), chmod(tls, 0o700), chmod(conversations, 0o700), chmod(credentials, 0o700), writeFile(token, "a-worker-token-with-at-least-thirty-two-characters", { mode: 0o600 })]);
   await writeFile(join(tls, "cert.pem"), "fixture certificate\n");
   await writeFile(join(tls, "key.pem"), "fixture key\n", { mode: 0o600 });
   await chmod(join(tls, "key.pem"), 0o600);
@@ -125,6 +174,7 @@ async function runPreflight(configuration: (paths: Paths) => object, options: Pr
   const inspection = options.inspection?.(paths, endpoint) ?? deployedDashboard(paths, endpoint);
   await writeFile(join(workspace, "compose.json"), JSON.stringify(compose));
   await writeFile(join(workspace, "inspect.json"), JSON.stringify([inspection]));
+  await writeFile(join(workspace, "worker-inspect.json"), JSON.stringify([options.workerInspection?.(paths) ?? deployedWorker(paths)]));
   await writeFile(join(workspace, "tailscale.json"), JSON.stringify({
     Self: { TailscaleIPs: ["100.101.102.103"], DNSName: options.dnsName ?? "voidstation.test-tailnet.ts.net." },
   }));
@@ -137,10 +187,11 @@ case "$1" in
   compose) case "$4 $5 $6" in
     "config --format json") cat "$PREFLIGHT_COMPOSE" ;;
     "ps --quiet dashboard") if [ "$PREFLIGHT_POSTDEPLOY" = true ]; then echo dashboard-id; fi ;;
+    "ps --quiet assistant-worker") if [ "$PREFLIGHT_POSTDEPLOY" = true ]; then echo worker-id; fi ;;
     *) exit 2 ;;
   esac ;;
   ps) [ "$2" = --quiet ] || exit 2; if [ "$PREFLIGHT_POSTDEPLOY" = true ]; then echo dashboard-id; fi ;;
-  inspect) cat "$PREFLIGHT_INSPECT" ;;
+  inspect) if [ "$2" = worker-id ]; then cat "$PREFLIGHT_WORKER_INSPECT"; else cat "$PREFLIGHT_INSPECT"; fi ;;
   *) exit 2 ;;
 esac
 `);
@@ -227,6 +278,7 @@ syncBuiltinESMExports();`);
       PREFLIGHT_COMPOSE: join(workspace, "compose.json"),
       PREFLIGHT_TLS: tls,
       PREFLIGHT_INSPECT: join(workspace, "inspect.json"),
+      PREFLIGHT_WORKER_INSPECT: join(workspace, "worker-inspect.json"),
       PREFLIGHT_TAILSCALE: join(workspace, "tailscale.json"),
       PREFLIGHT_SERVE: join(workspace, "serve.json"),
       PREFLIGHT_SAN: join(workspace, "san.txt"),
@@ -316,7 +368,32 @@ it("rejects an additional service", async () => {
     configuration.services.worker = { image: "busybox" };
     return configuration;
   });
-  expect(result.output).toContain("must define exactly one dashboard service");
+  expect(result.output).toContain("must define exactly dashboard and assistant-worker services");
+});
+
+it("rejects a worker host port publication", async () => {
+  const result = await runPreflight((paths) => {
+    const configuration = lockedDashboard(paths);
+    configuration.services["assistant-worker"].ports = [{ target: 3001, published: "3001", protocol: "tcp", mode: "ingress", host_ip: "127.0.0.1" }];
+    return configuration;
+  });
+  expect(result.output).toContain("assistant-worker must not publish a host port");
+});
+
+it("rejects worker credentials that share conversation storage", async () => {
+  const result = await runPreflight((paths) => {
+    const configuration = lockedDashboard(paths);
+    configuration.services["assistant-worker"].volumes[2].source = paths.conversations;
+    return configuration;
+  });
+  expect(result.output).toContain("conversation and credential storage must use separate host directories");
+});
+
+it("rejects a worker token shorter than 32 characters", async () => {
+  const result = await runPreflight(lockedDashboard, {
+    setup: async (paths) => { await writeFile(paths.token, "too-short", { mode: 0o600 }); },
+  });
+  expect(result.output).toContain("must contain at least 32 non-whitespace characters");
 });
 
 it("rejects a dashboard command override", async () => {
@@ -423,6 +500,18 @@ it("accepts a healthy deployed dashboard and a certificate-verified HTTPS login 
     port: fixture!.port,
     rejectUnauthorizedIsFalse: false,
   });
+});
+
+it("rejects a published worker port after deployment", async () => {
+  const result = await runPreflight(lockedDashboard, {
+    postDeploy: true,
+    workerInspection: (paths) => {
+      const inspection = deployedWorker(paths);
+      inspection.NetworkSettings.Ports["3001/tcp"] = [{ HostIp: "127.0.0.1", HostPort: "3001" }];
+      return inspection;
+    },
+  });
+  expect(result.output).toContain("assistant-worker has a host port publication");
 });
 
 it("rejects an extra post-deploy port publication", async () => {

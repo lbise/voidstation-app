@@ -1,4 +1,4 @@
-import { LayoutDashboard, Server } from "lucide-react";
+import { Bot, LayoutDashboard, Server } from "lucide-react";
 
 import { LogoutButton } from "@/components/logout-button";
 import { MetricsDashboard } from "@/components/metrics-dashboard";
@@ -19,6 +19,10 @@ export default function Home() {
           <a href="/" aria-current="page">
             <LayoutDashboard aria-hidden="true" />
             Dashboard
+          </a>
+          <a href="/assistant">
+            <Bot aria-hidden="true" />
+            Assistant
           </a>
         </nav>
         <LogoutButton />

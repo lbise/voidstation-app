@@ -16,6 +16,18 @@ Create the dedicated authentication directory before first bootstrap. It holds `
 sudo install -d -o 1000 -g 1000 -m 0700 /var/lib/voidstation/auth
 ```
 
+Create worker-owned state separately. The shared internal token is a file, not an environment value. This command writes it without echoing it to the terminal. Do not put the token in `.env`, logs, a shell argument, or a browser response.
+
+```sh
+sudo install -d -o 1000 -g 1000 -m 0700 /var/lib/voidstation/conversations
+sudo install -d -o 1000 -g 1000 -m 0700 /var/lib/voidstation/worker-credentials
+sudo sh -c 'umask 077; head -c 48 /dev/urandom | base64 -w 0 > /var/lib/voidstation/worker-token'
+sudo chown 1000:1000 /var/lib/voidstation/worker-token
+sudo chmod 0600 /var/lib/voidstation/worker-token
+```
+
+Set these three paths in `.env`. The worker token must contain at least 32 characters after surrounding whitespace is removed. `conversations` holds worker-owned transcripts. `worker-credentials` holds private provider refresh state. Do not merge either with the Dashboard authentication directory. The worker's `worker/README.md` documents its own Codex device-code login and renewal. Complete that login from an owner-controlled terminal, never by copying an interactive Pi or Codex credential from the Server.
+
 Provision the certificate through the reviewed host helper. Replace the hostname with the exact hostname in `VOIDSTATION_ORIGIN`, without its scheme or port. The helper validates the hostname, expiry, and key pair before installing them. Initial provisioning does not restart an existing Dashboard or perform a live cutover.
 
 ```sh
@@ -88,9 +100,26 @@ npm run docker:up
 npm run docker:logs
 ```
 
-`docker:check` reads Compose, Docker, Tailscale status, certificate metadata, firewall rules, and filesystem metadata. It also checks mounted inputs as UID/GID 1000 with supplementary groups cleared, so root's permissions cannot hide an access failure. It does not create directories, obtain a certificate, alter Tailscale, or displace a service. It rejects a remote Docker context, a non-Tailscale publication, wildcard or LAN publication, another service, unsafe Compose overrides, extra mounts, root execution, capabilities, privilege escalation, changed listener/origin/auth paths, a mismatched hostname, invalid or mismatched certificate/key, Funnel, missing probes, or a conflicting port.
+`docker:check` reads Compose, Docker, Tailscale status, certificate metadata, firewall rules, and filesystem metadata. It also checks mounted inputs as UID/GID 1000 with supplementary groups cleared, so root's permissions cannot hide an access failure. It does not create directories, obtain a certificate, alter Tailscale, or displace a service. It rejects a remote Docker context, a non-Tailscale publication, wildcard or LAN publication, an unexpected service, unsafe Compose overrides, extra mounts, root execution, capabilities, privilege escalation, changed listener/origin/auth paths, a mismatched hostname, invalid or mismatched certificate/key, Funnel, missing probes, or a conflicting port.
 
-`docker:up` runs preflight before and after the image build. It updates only `dashboard`, then inspects its container configuration and waits up to 30 seconds for a running process and a certificate-verified HTTPS login response. Keep the prior secure revision/image until verification passes. A failed postdeploy check requires owner investigation; it is not a reason to weaken TLS or mount permissions. Do not use `git reset --hard` over local work.
+`docker:up` runs preflight before and after both image builds. It updates only `dashboard` and `assistant-worker`, then inspects both containers and waits up to 30 seconds for a running Dashboard and a certificate-verified HTTPS login response. Keep the prior secure revision/image until verification passes. A failed postdeploy check requires owner investigation; it is not a reason to weaken TLS or mount permissions. Do not use `git reset --hard` over local work.
+
+Preflight resolves the effective Compose configuration and checks the worker build path, internal URL, shared token mount, separate conversation and credential mounts, UID 1000 ownership, modes, read-only root filesystem, dropped capabilities, and lack of host publication. It does not read an existing Pi installation or provider credential. CI builds the worker from its package lock and inspects the resulting runtime image separately.
+
+## Encrypted backup and restore
+
+Stop both containers before taking or restoring a snapshot. Keep the archive owner-only and encrypted. `age` is one suitable tool. It prompts for a passphrase and does not put it in command history.
+
+```sh
+mkdir -p "$HOME/voidstation-backups"
+docker compose --project-name voidstation-app stop dashboard assistant-worker
+sudo tar -C /var/lib/voidstation -cf - auth conversations worker-credentials worker-token \
+  | age -p > "$HOME/voidstation-backups/voidstation-$(date +%F).tar.age"
+```
+
+Restore only after separately confirming the archive and passphrase. Leave both containers stopped. Extract into `/var/lib/voidstation`, restore `auth`, `conversations`, and `worker-credentials` to UID/GID 1000 mode 0700, and restore `worker-token` to UID/GID 1000 mode 0600. Then run `npm run docker:check` before `npm run docker:up`.
+
+A restore preserves saved history but does not restart a turn. Treat restored unfinished turns as interrupted and reconcile their effects before a new request. Do not replay transcript tool calls. Future action approvals must remain subject to their expiry and current-service recheck. Deleting an idle conversation must remove its transcript and associated future action and approval records, but never undo media already changed by an approved action.
 
 ## Bootstrap and recovery
 
@@ -145,9 +174,9 @@ docker inspect "$cid" --format '{{.Config.User}} {{json .HostConfig.CapDrop}} {{
 ss -ltn
 ```
 
-There must be exactly one `3000/tcp` publication, on the configured `100.64.0.0/10` address and configured port. It must not show `0.0.0.0`, `::`, a LAN address, or another publication. The container uses `HOSTNAME=0.0.0.0` only inside Docker so its bridge publication works. The launcher defaults to loopback when Compose does not set `HOSTNAME`.
+There must be exactly one `3000/tcp` publication, on the configured `100.64.0.0/10` address and configured port. It must not show `0.0.0.0`, `::`, a LAN address, or another publication. `assistant-worker` must show no host binding for `3001/tcp`. The Dashboard uses `HOSTNAME=0.0.0.0` only inside Docker so its bridge publication works. The worker's `VOIDSTATION_WORKER_HOST=0.0.0.0` is only its bridge listener, not a host publication. The launcher defaults to loopback when Compose does not set `HOSTNAME`.
 
-The image runs as UID/GID 1000 with all capabilities dropped, no-new-privileges, a read-only root filesystem, a restricted `/tmp` tmpfs, five unchanged read-only metrics mounts, a writable UID-1000 auth bind, and a read-only TLS bind.
+Both images run as UID/GID 1000 with all capabilities dropped, no-new-privileges, a read-only root filesystem, and a restricted `/tmp` tmpfs. The Dashboard has five unchanged read-only metrics mounts, a writable UID-1000 auth bind, a read-only TLS bind, and the read-only worker token. The worker has only that read-only token plus writable UID-1000 conversation and credential binds.
 
 An owner-authorized local packet check is available after deployment:
 
@@ -176,6 +205,35 @@ python3 scripts/verify-owner-metrics.py https://name.tailnet.ts.net ROOT_PROBE D
 Errors identify terminal input, login HTTP status, or session handling without printing credentials. HTTP 401 means login was rejected; HTTP 429 means wait before retrying. The lower-level `scripts/docker-smoke.py` also accepts an approved test session through `VOIDSTATION_SMOKE_COOKIE`, without logging it.
 
 The script disables proxy use and performs the same independent host comparison as the prior deployment check. Keep raw output under ignored `artifacts/`. Do not commit cookies, IP addresses, certificate paths, UUIDs, or auth data.
+
+## Encrypted backup and restore
+
+Use an owner-controlled terminal and an installed `age` binary. These commands stop only Voidstation. Choose a private backup directory and the owner's public age recipient. Do not run backup or restore during active work unless interruption is intended.
+
+```sh
+set -o pipefail
+export BACKUP=/path/to/private/voidstation-backup.tar.age
+export AGE_RECIPIENT=age1... # Public recipient, not a provider credential.
+umask 077
+docker compose stop dashboard assistant-worker
+sudo tar -C /var/lib/voidstation -cf - auth conversations worker-credentials worker-token \
+  | age -r "$AGE_RECIPIENT" -o "$BACKUP"
+# Check that the entire pipeline completed successfully before restarting.
+docker compose start assistant-worker dashboard
+```
+
+Substitute the configured host state paths if they differ from the documented defaults. Stopping both containers gives SQLite, application records, Pi transcripts, and credentials one consistent backup point. Never archive these directories unencrypted. Retained backups still contain deleted conversations. Set a retention period and remove expired encrypted backups yourself; automated retention is not implemented.
+
+To restore a trusted backup, stop both containers first. Preserve the current state as a separate encrypted backup before replacing it. Decrypt and extract into an empty, owner-only staging directory, not on top of running databases:
+
+```sh
+export RESTORE=/path/to/private/restore-staging
+export AGE_IDENTITY=/path/to/private/age-identity
+install -d -m 0700 "$RESTORE"
+age -d -i "$AGE_IDENTITY" "$BACKUP" | tar -xf - -C "$RESTORE"
+```
+
+Verify the staged directories are `auth`, `conversations`, and `worker-credentials`, plus `worker-token`. Replace the stopped deployment's corresponding state with those entries. Restore UID/GID 1000 ownership, directory mode 0700, and token mode 0600. Keep provider credentials only in the worker credential directory. Run `npm run docker:check` before restarting. Worker startup marks unfinished turns interrupted and never replays them. Future action and approval records must follow this same deletion, backup, and reconciliation lifecycle; a restored approval must never become an execution queue.
 
 ## Local HTTPS launcher
 

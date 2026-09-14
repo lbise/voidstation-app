@@ -1,6 +1,6 @@
 # Voidstation
 
-A private Dashboard for Server CPU, RAM, Disk space, and Uptime. One local owner account protects all pages and measurements. [Issue #7](https://github.com/lbise/voidstation-app/issues/7) replaces the earlier unauthenticated LAN access policy. No model provider is required.
+A private Dashboard for Server CPU, RAM, Disk space, and Uptime, plus a saved-chat Assistant backed by an isolated Pi worker. One local owner account protects both pages. The Assistant is tool-free in this release and cannot execute Server or media actions. Dashboard access does not require a model provider.
 
 ## Local development
 
@@ -18,10 +18,22 @@ npm run dev
 
 The password prompt does not echo input. Run `npm run owner -- recover` to replace the password and invalidate every session. Use a password of at least 12 characters. There is no registration or user-management UI. Production uses a dedicated persistent state directory and Tailscale-issued TLS certificates, not development certificates.
 
+### Development over the local network
+
+```sh
+npm run dev:network
+```
+
+This selects the Server's private LAN IPv4 address and prints an HTTPS URL on port 3443. No Tailscale is needed. The first run prompts for a separate debug owner password and creates a self-signed development certificate. Accept its certificate warning on the laptop. Debug state lives in `/tmp/voidstation-debug`, not the production authentication directory. Stop with Ctrl+C.
+
+If multiple LAN addresses are available, select one with `VOIDSTATION_DEV_HOST`. `VOIDSTATION_DEV_PORT` changes the port and `VOIDSTATION_DEV_STATE_DIR` changes the debug state directory. For example, `VOIDSTATION_DEV_PORT=3444 npm run dev:network` uses port 3444. Only use this development server on a trusted LAN. Production Compose access remains Tailscale-only. This command starts the web server, not the separate Assistant worker.
+
 On Linux, the application reads this machine's `/proc/uptime` and `/proc/meminfo`. Other operating systems show unavailable measurements unless supplied with Linux-format source files. Local readings describe the development machine, not the home Server.
 
 ```sh
+npm ci --prefix worker
 npm run typecheck
+npm run typecheck --prefix worker
 npm run test:unit          # Fast deterministic host-metrics tests
 npm run test:http          # Production build, then real HTTP integration test
 npm test                   # Production build, then the full Vitest suite
@@ -29,7 +41,7 @@ npm run build             # Standalone production build only
 npm start                 # TLS-only production server; requires TLS cert/key and origin env
 ```
 
-GitHub Actions runs installation, type checking, and `npm test`. The HTTP test starts the real TLS-only production server on a temporary loopback port with a temporary trusted certificate and owner database. It exercises protected pages, metrics, login, logout, throttling, recovery, and origin rejection, alongside measurement regressions. It removes its files and process afterward. OpenSSL, Python 3, and Bash are required for the Linux test suite. No private-network access or root privileges are needed.
+GitHub Actions runs installation, type checking, and `npm test`. The HTTP test starts the real TLS-only production server on a temporary loopback port with a temporary trusted certificate and owner database. It exercises protected pages, metrics, login, logout, throttling, recovery, and origin rejection, alongside measurement regressions. The Assistant HTTP tests also run the real Pi worker with deterministic model responses. They cover saved history, two device sessions, streamed replies, competing turns, disconnects, restart, deletion, provider failures, and secret canaries. No live Codex credentials are used. Tests remove their files and processes afterward. OpenSSL, Python 3, and Bash are required for the Linux test suite. No private-network access or root privileges are needed.
 
 ## Measurements and the HTTP contract
 
@@ -90,13 +102,13 @@ Follow [the deployment runbook](docs/deployment.md) to configure the ignored `.e
 
 ```sh
 npm run docker:check      # Validate TLS, Tailscale, container restrictions, mounts, and ports
-npm run docker:up        # Build, recheck, and update only the Dashboard
+npm run docker:up        # Build, recheck, and update Dashboard plus assistant-worker
 npm run docker:logs
 ```
 
-The single Tailscale publication targets container port 3000, which accepts TLS only. A preflight-verified DOCKER-USER rule blocks non-Tailscale ingress to the dedicated `br-voidstation` bridge. The owner must authorize and persist that rule before deployment. A Tailscale destination address alone does not prevent routed LAN access. Choose a free HTTPS host port. Existing Dashboard bindings are permitted during updates; unrelated port owners are not displaced. See the runbook for the separately authorized cutover from the old two-port deployment.
+The single Tailscale publication targets Dashboard container port 3000, which accepts TLS only. `assistant-worker` has no host publication. The Dashboard calls it only on the Compose bridge at `http://assistant-worker:3001`, authenticated with a shared token file. The worker keeps conversation transcripts and provider refresh state in separate durable directories. A preflight-verified DOCKER-USER rule blocks non-Tailscale ingress to the dedicated `br-voidstation` bridge. The owner must authorize and persist that rule before deployment. A Tailscale destination address alone does not prevent routed LAN access. Choose a free HTTPS host port. Existing Dashboard bindings are permitted during updates; unrelated port owners are not displaced. See the runbook for the separately authorized cutover from the old two-port deployment.
 
-The image runs as the unprivileged `node` user. Compose drops capabilities, prevents gaining new privileges, uses a read-only root filesystem, and binds only the required narrow read-only inputs:
+Both images run as UID/GID 1000. Compose drops capabilities, prevents gaining new privileges, uses a read-only root filesystem, and gives each service only its own writable state plus a restricted `/tmp` tmpfs. The Dashboard binds only the required narrow read-only inputs:
 
 | Host source | Container target |
 | --- | --- |
@@ -108,7 +120,11 @@ The image runs as the unprivileged `node` user. Compose drops capabilities, prev
 
 Set the two filesystem variables to dedicated existing empty directories on the selected root and data filesystems. There are no default probe paths. Configure the expected data filesystem UUID too; preflight verifies it and checks that the root probe belongs to `/`. The image uses `VOIDSTATION_HOST_PROC=/host/proc` plus fixed filesystem targets and never falls back to container sources if those mounts fail. Missing source files or directories make Compose fail rather than create them. Unreadable or invalid sources report unavailable. Do not work around access failures with root, privileged mode, the Docker socket, or an entire host filesystem mount.
 
-`restart: unless-stopped` restarts the container after crashes and Docker daemon restarts, provided the daemon starts at boot. A manually stopped container stays stopped. No reboot is needed to build or test this package.
+The worker has outbound network access for its configured provider. It has no Docker socket, host metrics mounts, TLS mount, application auth mount, development workspace, or host Pi configuration. Its token is read-only. Conversation storage and worker credential storage are separate writable UID-1000 directories. Use the worker's [independent device-code login](worker/README.md#codex-login). Never copy an interactive Pi or Codex credential into either directory.
+
+Back up `auth`, `conversations`, `worker-credentials`, and `worker-token` as one encrypted, owner-only snapshot while both containers are stopped. Restore them only while both containers remain stopped, restore UID/GID 1000 and the documented modes, then run preflight before starting either container. A restored unfinished turn stays interrupted. Do not replay it. A future action approval restored from backup must be rechecked against current service state before execution; expired approvals stay expired. Deleting an idle conversation removes its transcript and its future action and approval records. It never reverses media changes.
+
+`restart: unless-stopped` restarts each container after crashes and Docker daemon restarts, provided the daemon starts at boot. A manually stopped container stays stopped. No reboot is needed to build or test this package.
 
 Do not expose Voidstation publicly or enable Tailscale Funnel. Do not assume host firewall defaults restrict Docker-published ports. Docker Desktop measures its Linux VM, not a macOS or Windows host. Earlier [issue #5 evidence](docs/verification/issue-5.md) describes the superseded deployment, not proof of this release's secure publication.
 
@@ -119,6 +135,19 @@ Do not expose Voidstation publicly or enable Tailscale Funnel. Do not assume hos
 Sessions are opaque random tokens in `__Host-voidstation-session`, with Secure, HttpOnly, SameSite=Strict, and an eight-hour lifetime. The private SQLite database stores token hashes, a salted scrypt password hash, and a persistent owner-wide login limiter. It contains no model-provider credentials. Five sign-in attempts per rolling 15-minute window bound password hashing, including concurrent attempts. Changing IP or forwarding headers cannot reset that limit. Administrative recovery resets the limiter and invalidates all sessions, including sessions in other running application processes sharing the database.
 
 All mutations require the exact configured HTTPS Origin, including login and logout. Cross-site and same-site-but-other-origin requests fail; missing Origin fails too. No HTTP-to-HTTPS redirect listener exists. Never use `next start` as a production shortcut.
+
+## Assistant verification
+
+The worker has its own exact Pi pins and lockfile. Docker checks run real test and production images against synthetic Pi resources and temporary state, not the owner's development credentials.
+
+```sh
+docker build --target build -t voidstation-assistant-worker:test worker
+docker build --target runtime -t voidstation-assistant-worker:check worker
+npm run worker:runtime:inspect
+node scripts/compose-runtime-check.mjs
+```
+
+For a disposable browser fixture, build both applications, then run `npm run assistant:browser-fixture`. It prints the local HTTPS origin and writes temporary fixture details to ignored `artifacts/assistant/browser-fixture.json`. Map its test hostname to loopback in the test browser. Stop the fixture with Ctrl+C. See [issue #8 verification](docs/verification/issue-8.md) for the checked scenarios and remaining owner-run steps.
 
 ## Browser verification
 

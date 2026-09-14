@@ -29,6 +29,8 @@ services:
       VOIDSTATION_HOST_PROC: "/host/proc"
       VOIDSTATION_HOST_ROOT_FS: "/host/filesystems/root"
       VOIDSTATION_HOST_DATA_FS: "/host/filesystems/data"
+      VOIDSTATION_WORKER_URL: "http://assistant-worker:3001"
+      VOIDSTATION_WORKER_TOKEN_FILE: "/run/voidstation-worker/token"
     read_only: true
     cap_drop:
       - ALL
@@ -78,5 +80,48 @@ services:
         source: "${VOIDSTATION_TLS_DIRECTORY:?Set VOIDSTATION_TLS_DIRECTORY in .env}"
         target: /run/voidstation-tls
         read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${VOIDSTATION_WORKER_TOKEN_FILE:?Set VOIDSTATION_WORKER_TOKEN_FILE in .env}"
+        target: /run/voidstation-worker/token
+        read_only: true
+        bind:
+          create_host_path: false
+
+  assistant-worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    user: "1000:1000"
+    environment:
+      VOIDSTATION_WORKER_HOST: "0.0.0.0"
+      VOIDSTATION_WORKER_PORT: "3001"
+      VOIDSTATION_WORKER_TOKEN_FILE: "/run/voidstation-worker/token"
+      VOIDSTATION_CONVERSATION_DIR: "/var/lib/voidstation/conversations"
+      VOIDSTATION_CREDENTIAL_DIR: "/var/lib/voidstation/credentials"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+    volumes:
+      - type: bind
+        source: "${VOIDSTATION_WORKER_TOKEN_FILE:?Set VOIDSTATION_WORKER_TOKEN_FILE in .env}"
+        target: /run/voidstation-worker/token
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${VOIDSTATION_CONVERSATION_DIRECTORY:?Set VOIDSTATION_CONVERSATION_DIRECTORY in .env}"
+        target: /var/lib/voidstation/conversations
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${VOIDSTATION_CREDENTIAL_DIRECTORY:?Set VOIDSTATION_CREDENTIAL_DIRECTORY in .env}"
+        target: /var/lib/voidstation/credentials
         bind:
           create_host_path: false

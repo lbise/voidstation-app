@@ -8,14 +8,19 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const projectName = "voidstation-app";
-const serviceName = "dashboard";
+const dashboardServiceName = "dashboard";
+const workerServiceName = "assistant-worker";
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const containerPort = 3000;
+const dashboardPort = 3000;
+const workerPort = 3001;
 const containerPaths = {
   cert: "/run/voidstation-tls/cert.pem",
   key: "/run/voidstation-tls/key.pem",
   authDirectory: "/var/lib/voidstation",
   authDatabase: "/var/lib/voidstation/auth.sqlite",
+  workerToken: "/run/voidstation-worker/token",
+  conversationDirectory: "/var/lib/voidstation/conversations",
+  credentialDirectory: "/var/lib/voidstation/credentials",
 };
 
 function fail(message) {
@@ -138,19 +143,26 @@ function validateOrigin(value, endpoint) {
   return origin.hostname.toLowerCase();
 }
 
-function validateServiceShape(configuration, service) {
-  const serviceNames = Object.keys(configuration.services ?? {});
-  if (serviceNames.length !== 1 || serviceNames[0] !== serviceName) {
-    fail("compose.yaml must define exactly one dashboard service.");
+function validateServiceShape(configuration, dashboard, worker) {
+  const serviceNames = Object.keys(configuration.services ?? {}).sort();
+  if (JSON.stringify(serviceNames) !== JSON.stringify([workerServiceName, dashboardServiceName].sort())) {
+    fail("compose.yaml must define exactly dashboard and assistant-worker services.");
   }
   const allowed = new Set(["build", "restart", "user", "ports", "environment", "read_only", "cap_drop", "security_opt", "tmpfs", "volumes", "command", "entrypoint", "networks"]);
-  for (const key of Object.keys(service)) {
-    if (!allowed.has(key)) fail(`dashboard.${key} is not allowed in this deployment.`);
+  for (const [name, service] of [[dashboardServiceName, dashboard], [workerServiceName, worker]]) {
+    for (const key of Object.keys(service)) {
+      if (!allowed.has(key)) fail(`${name}.${key} is not allowed in this deployment.`);
+    }
   }
-  const build = service.build;
-  if (!build || build.context !== repositoryRoot || (build.dockerfile ?? "Dockerfile") !== "Dockerfile" ||
-      Object.keys(build).some((key) => !["context", "dockerfile"].includes(key))) {
+  const dashboardBuild = dashboard.build;
+  if (!dashboardBuild || dashboardBuild.context !== repositoryRoot || (dashboardBuild.dockerfile ?? "Dockerfile") !== "Dockerfile" ||
+      Object.keys(dashboardBuild).some((key) => !["context", "dockerfile"].includes(key))) {
     fail("dashboard must build this repository's default Dockerfile without overrides.");
+  }
+  const workerBuild = worker.build;
+  if (!workerBuild || workerBuild.context !== path.join(repositoryRoot, "worker") || (workerBuild.dockerfile ?? "Dockerfile") !== "Dockerfile" ||
+      Object.keys(workerBuild).some((key) => !["context", "dockerfile"].includes(key))) {
+    fail("assistant-worker must build only worker/Dockerfile without overrides.");
   }
   const networks = configuration.networks;
   const { ipam, ...network } = networks?.default ?? {};
@@ -161,9 +173,11 @@ function validateServiceShape(configuration, service) {
       })) {
     fail("dashboard must use the dedicated default bridge network without overrides.");
   }
-  if (service.command != null || service.entrypoint != null) fail("dashboard command and entrypoint must use the image defaults.");
-  if (JSON.stringify(service.networks) !== JSON.stringify({ default: null })) {
-    fail("dashboard must use only Compose's default bridge network.");
+  for (const [name, service] of [[dashboardServiceName, dashboard], [workerServiceName, worker]]) {
+    if (service.command != null || service.entrypoint != null) fail(`${name} command and entrypoint must use the image defaults.`);
+    if (JSON.stringify(service.networks) !== JSON.stringify({ default: null })) {
+      fail(`${name} must use only Compose's default bridge network.`);
+    }
   }
 }
 
@@ -171,7 +185,7 @@ function validatePorts(service) {
   const ports = requireArray(service.ports, "dashboard.ports");
   if (ports.length !== 1) fail("dashboard must publish exactly one Tailscale TLS binding.");
   const binding = ports[0];
-  if (binding?.target !== containerPort || binding.protocol !== "tcp" || binding.mode !== "ingress") {
+  if (binding?.target !== dashboardPort || binding.protocol !== "tcp" || binding.mode !== "ingress") {
     fail("dashboard must publish TCP host traffic to container port 3000.");
   }
   const host = binding.host_ip;
@@ -193,6 +207,8 @@ function validateEnvironment(service, endpoint) {
     VOIDSTATION_HOST_PROC: "/host/proc",
     VOIDSTATION_HOST_ROOT_FS: "/host/filesystems/root",
     VOIDSTATION_HOST_DATA_FS: "/host/filesystems/data",
+    VOIDSTATION_WORKER_URL: `http://${workerServiceName}:${workerPort}`,
+    VOIDSTATION_WORKER_TOKEN_FILE: containerPaths.workerToken,
   };
   for (const [name, expected] of Object.entries(required)) {
     if (String(environment[name] ?? "") !== expected) fail(`dashboard.environment.${name} must be ${expected}.`);
@@ -204,16 +220,16 @@ function validateEnvironment(service, endpoint) {
   return validateOrigin(environment.VOIDSTATION_ORIGIN, endpoint);
 }
 
-function validateSecurityConfiguration(service) {
+function validateSecurityConfiguration(name, service) {
   if (service.restart !== "unless-stopped" || service.read_only !== true || String(service.user) !== "1000:1000") {
-    fail("dashboard must use restart: unless-stopped, read_only: true, and user: 1000:1000.");
+    fail(`${name} must use restart: unless-stopped, read_only: true, and user: 1000:1000.`);
   }
-  if (!sameArray(service.cap_drop, ["ALL"])) fail("dashboard must keep cap_drop: [ALL].");
+  if (!sameArray(service.cap_drop, ["ALL"])) fail(`${name} must keep cap_drop: [ALL].`);
   if (!sameArray(service.security_opt, ["no-new-privileges:true"])) {
-    fail("dashboard must keep security_opt: [no-new-privileges:true].");
+    fail(`${name} must keep security_opt: [no-new-privileges:true].`);
   }
   if (!sameArray(service.tmpfs, ["/tmp:size=16m,noexec,nosuid"])) {
-    fail("dashboard must keep its restricted /tmp tmpfs.");
+    fail(`${name} must keep its restricted /tmp tmpfs.`);
   }
 }
 
@@ -228,7 +244,7 @@ function validateVolume(volume, target, source, readOnly = true) {
 
 function validateMountConfiguration(service) {
   const volumes = requireArray(service.volumes, "dashboard.volumes");
-  if (volumes.length !== 7) fail("dashboard must have five metrics mounts, one auth-data mount, and one TLS mount.");
+  if (volumes.length !== 8) fail("dashboard must have five metrics mounts, auth data, TLS, and the worker token.");
   const byTarget = new Map();
   for (const volume of volumes) {
     if (byTarget.has(volume?.target)) fail(`dashboard has more than one mount at ${volume.target}.`);
@@ -251,13 +267,51 @@ function validateMountConfiguration(service) {
   if (tls?.type !== "bind" || typeof tls.source !== "string" || tls.read_only !== true || tls.bind?.create_host_path !== false) {
     fail("The TLS bind mount must be read-only and must not create its host path.");
   }
+  const workerToken = byTarget.get(containerPaths.workerToken);
+  validateVolume(workerToken, containerPaths.workerToken, workerToken?.source);
   return {
     proc: ["/proc/stat", "/proc/uptime", "/proc/meminfo"],
     root: byTarget.get("/host/filesystems/root").source,
     data: byTarget.get("/host/filesystems/data").source,
     auth: auth.source,
     tls: tls.source,
+    workerToken: workerToken.source,
   };
+}
+
+function validateWorkerConfiguration(service, dashboardTokenSource) {
+  const environment = environmentMap(service.environment);
+  const required = {
+    VOIDSTATION_WORKER_HOST: "0.0.0.0",
+    VOIDSTATION_WORKER_PORT: String(workerPort),
+    VOIDSTATION_WORKER_TOKEN_FILE: containerPaths.workerToken,
+    VOIDSTATION_CONVERSATION_DIR: containerPaths.conversationDirectory,
+    VOIDSTATION_CREDENTIAL_DIR: containerPaths.credentialDirectory,
+  };
+  for (const [name, expected] of Object.entries(required)) {
+    if (String(environment[name] ?? "") !== expected) fail(`assistant-worker.environment.${name} must be ${expected}.`);
+  }
+  for (const name of Object.keys(environment)) {
+    if (!Object.hasOwn(required, name)) fail(`assistant-worker.environment.${name} is not allowed.`);
+  }
+  if (service.ports != null && (!Array.isArray(service.ports) || service.ports.length !== 0)) {
+    fail("assistant-worker must not publish a host port.");
+  }
+  const volumes = requireArray(service.volumes, "assistant-worker.volumes");
+  if (volumes.length !== 3) fail("assistant-worker must mount only its token, conversations, and credentials.");
+  const byTarget = new Map(volumes.map((volume) => [volume?.target, volume]));
+  if (byTarget.size !== volumes.length) fail("assistant-worker has duplicate mounts.");
+  validateVolume(byTarget.get(containerPaths.workerToken), containerPaths.workerToken, dashboardTokenSource);
+  for (const target of [containerPaths.conversationDirectory, containerPaths.credentialDirectory]) {
+    const volume = byTarget.get(target);
+    if (volume?.type !== "bind" || typeof volume.source !== "string" || volume.read_only === true || volume.bind?.create_host_path !== false) {
+      fail(`The assistant-worker bind mount for ${target} must be writable and must not create its host path.`);
+    }
+  }
+  const conversations = byTarget.get(containerPaths.conversationDirectory).source;
+  const credentials = byTarget.get(containerPaths.credentialDirectory).source;
+  if (conversations === credentials) fail("assistant-worker conversation and credential storage must use separate host directories.");
+  return { token: dashboardTokenSource, conversations, credentials };
 }
 
 function checkedPath(source, description, directory) {
@@ -326,6 +380,22 @@ function validateFilesystemProbes(probes, expectedDataUuid) {
   if (rootMount.target === probes.root || dataMount.target === probes.data) fail("Filesystem probe directories must not be entire filesystem mounts.");
   if (typeof dataMount.uuid !== "string" || dataMount.uuid.toLowerCase() !== expectedDataUuid.toLowerCase()) {
     fail(`Data filesystem UUID does not match the configured expected UUID (${expectedDataUuid}).`);
+  }
+}
+
+function validateWorkerState(probes) {
+  const token = checkedPath(probes.token, "Worker token file", false);
+  requireAccess(probes.token, "Worker token file", fs.constants.R_OK);
+  if (token.uid !== 1000 || token.gid !== 1000 || (token.mode & 0o777) !== 0o600) {
+    fail("Worker token file must be owned by UID/GID 1000 with mode 0600.");
+  }
+  if (fs.readFileSync(probes.token, "utf8").trim().length < 32) fail("Worker token file must contain at least 32 non-whitespace characters.");
+  for (const [description, source] of [["Conversation directory", probes.conversations], ["Worker credential directory", probes.credentials]]) {
+    const stat = checkedPath(source, description, true);
+    requireAccess(source, description, fs.constants.R_OK | fs.constants.W_OK | fs.constants.X_OK);
+    if (stat.uid !== 1000 || stat.gid !== 1000 || (stat.mode & 0o777) !== 0o700) {
+      fail(`${description} must be owned by UID/GID 1000 with mode 0700.`);
+    }
   }
 }
 
@@ -427,13 +497,16 @@ function validateHostSupport(tlsDirectory, hostname) {
   }
 }
 
-function validateRuntimeAccess(probes) {
+function validateRuntimeAccess(probes, worker) {
   const inputs = [
     ...probes.proc.map((source) => [source, fs.constants.R_OK]),
     ...[probes.root, probes.data, probes.tls].map((source) => [source, fs.constants.R_OK | fs.constants.X_OK]),
     [probes.auth, fs.constants.R_OK | fs.constants.W_OK | fs.constants.X_OK],
     [path.join(probes.tls, "cert.pem"), fs.constants.R_OK],
     [path.join(probes.tls, "key.pem"), fs.constants.R_OK],
+    [worker.token, fs.constants.R_OK],
+    [worker.conversations, fs.constants.R_OK | fs.constants.W_OK | fs.constants.X_OK],
+    [worker.credentials, fs.constants.R_OK | fs.constants.W_OK | fs.constants.X_OK],
   ];
   // Check real permissions and ACLs with the container's identity, not root's.
   runAsRoot("setpriv", ["--reuid=1000", "--regid=1000", "--clear-groups", process.execPath,
@@ -449,7 +522,7 @@ function runningContainers() {
 
 function ownBinding(container, binding, endpoint) {
   const labels = container?.Config?.Labels ?? {};
-  return labels["com.docker.compose.project"] === projectName && labels["com.docker.compose.service"] === serviceName &&
+  return labels["com.docker.compose.project"] === projectName && labels["com.docker.compose.service"] === dashboardServiceName &&
     binding.HostIp === endpoint.host && String(binding.HostPort) === String(endpoint.port);
 }
 
@@ -490,7 +563,7 @@ function inspectNativeListeners(endpoint, ownDashboardBinding) {
 }
 
 async function postDeployInspection(endpoint, probes, origin) {
-  const id = docker(["compose", "--project-name", projectName, "ps", "--quiet", serviceName], "Finding the deployed dashboard").trim();
+  const id = docker(["compose", "--project-name", projectName, "ps", "--quiet", dashboardServiceName], "Finding the deployed dashboard").trim();
   if (!id) fail("The dashboard container is not running after deployment.");
   const container = parseJson(docker(["inspect", id], "Inspecting the deployed dashboard"), "Dashboard inspection")[0];
   if (!container) fail("Docker did not return the deployed dashboard inspection.");
@@ -508,7 +581,7 @@ async function postDeployInspection(endpoint, probes, origin) {
   if (otherPorts.length) fail("The deployed dashboard has an extra publication.");
   const expectedMounts = new Map([
     ["/host/proc/stat", "/proc/stat"], ["/host/proc/uptime", "/proc/uptime"], ["/host/proc/meminfo", "/proc/meminfo"],
-    ["/host/filesystems/root", probes.root], ["/host/filesystems/data", probes.data], [containerPaths.authDirectory, probes.auth], ["/run/voidstation-tls", probes.tls],
+    ["/host/filesystems/root", probes.root], ["/host/filesystems/data", probes.data], [containerPaths.authDirectory, probes.auth], ["/run/voidstation-tls", probes.tls], [containerPaths.workerToken, probes.workerToken],
   ]);
   const mounts = requireArray(container.Mounts, "Dashboard mounts");
   if (mounts.length !== expectedMounts.size) fail("The deployed dashboard mount count changed.");
@@ -548,33 +621,70 @@ async function postDeployInspection(endpoint, probes, origin) {
   fail("Dashboard did not become ready with a certificate-verified HTTPS login response within 30 seconds.");
 }
 
+function postDeployWorkerInspection(worker) {
+  const id = docker(["compose", "--project-name", projectName, "ps", "--quiet", workerServiceName], "Finding the deployed assistant-worker").trim();
+  if (!id) fail("The assistant-worker container is not running after deployment.");
+  const container = parseJson(docker(["inspect", id], "Inspecting the deployed assistant-worker"), "Assistant-worker inspection")[0];
+  if (!container) fail("Docker did not return the deployed assistant-worker inspection.");
+  if (!container.State?.Running || container.State?.Restarting) fail("The assistant-worker container is not running after deployment.");
+  if (container.Config?.User !== "1000:1000" || container.HostConfig?.ReadonlyRootfs !== true) {
+    fail("The deployed assistant-worker is not running as UID/GID 1000 with a read-only root filesystem.");
+  }
+  if (!sameArray(container.HostConfig?.CapDrop, ["ALL"]) || !requireArray(container.HostConfig?.SecurityOpt, "Assistant-worker security options").includes("no-new-privileges:true")) {
+    fail("The deployed assistant-worker security settings changed.");
+  }
+  if (Object.values(container.NetworkSettings?.Ports ?? {}).some((bindings) => bindings !== null)) {
+    fail("The deployed assistant-worker has a host port publication.");
+  }
+  const expectedMounts = new Map([
+    [containerPaths.workerToken, [worker.token, false]],
+    [containerPaths.conversationDirectory, [worker.conversations, true]],
+    [containerPaths.credentialDirectory, [worker.credentials, true]],
+  ]);
+  const mounts = requireArray(container.Mounts, "Assistant-worker mounts");
+  if (mounts.length !== expectedMounts.size) fail("The deployed assistant-worker mount count changed.");
+  for (const [destination, [source, writable]] of expectedMounts) {
+    const mount = mounts.find((candidate) => candidate.Destination === destination);
+    if (!mount || mount.Type !== "bind" || mount.Source !== source || mount.RW !== writable) {
+      fail(`The deployed assistant-worker mount at ${destination} changed or is unsafe.`);
+    }
+  }
+}
+
 async function main() {
   const postDeploy = process.argv.length === 3 && process.argv[2] === "--postdeploy";
   if (!postDeploy && process.argv.length !== 2) fail("Usage: deployment-preflight.mjs [--postdeploy]");
   verifyDockerContext();
   const configuration = composeConfig();
   if (configuration.name !== projectName) fail(`compose.yaml must use project name ${projectName}.`);
-  const service = configuration.services?.[serviceName];
-  if (!service) fail("compose.yaml must define the dashboard service.");
-  validateServiceShape(configuration, service);
+  const dashboard = configuration.services?.[dashboardServiceName];
+  const worker = configuration.services?.[workerServiceName];
+  if (!dashboard || !worker) fail("compose.yaml must define dashboard and assistant-worker services.");
+  validateServiceShape(configuration, dashboard, worker);
   const expectedDataUuid = configuration["x-voidstation"]?.expected_data_filesystem_uuid;
   if (typeof expectedDataUuid !== "string" || expectedDataUuid.trim() !== expectedDataUuid || !expectedDataUuid) {
     fail("x-voidstation.expected_data_filesystem_uuid must be configured.");
   }
-  const endpoint = validatePorts(service);
-  const hostname = validateEnvironment(service, endpoint);
-  validateSecurityConfiguration(service);
-  const probes = validateMountConfiguration(service);
+  const endpoint = validatePorts(dashboard);
+  const hostname = validateEnvironment(dashboard, endpoint);
+  validateSecurityConfiguration(dashboardServiceName, dashboard);
+  validateSecurityConfiguration(workerServiceName, worker);
+  const probes = validateMountConfiguration(dashboard);
+  const workerProbes = validateWorkerConfiguration(worker, probes.workerToken);
   validateFilesystemProbes(probes, expectedDataUuid);
   validateAuthDirectory(probes.auth);
+  validateWorkerState(workerProbes);
   validateCertificate(probes.tls, hostname);
-  validateRuntimeAccess(probes);
+  validateRuntimeAccess(probes, workerProbes);
   tailscaleStatus(endpoint, hostname);
   validateIngress();
   validateHostSupport(probes.tls, hostname);
   const ownDashboardBinding = inspectPortConflicts(endpoint);
   inspectNativeListeners(endpoint, ownDashboardBinding);
-  if (postDeploy) await postDeployInspection(endpoint, probes, environmentMap(service.environment).VOIDSTATION_ORIGIN);
+  if (postDeploy) {
+    postDeployWorkerInspection(workerProbes);
+    await postDeployInspection(endpoint, probes, environmentMap(dashboard.environment).VOIDSTATION_ORIGIN);
+  }
   console.log(postDeploy ? "Deployment post-deploy inspection passed." : "Deployment preflight passed.");
 }
 

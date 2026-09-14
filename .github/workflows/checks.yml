@@ -16,8 +16,18 @@ jobs:
         with:
           node-version: 24
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            worker/package-lock.json
       - run: npm ci
+      - run: npm ci --prefix worker
+      - run: node scripts/compose-runtime-check.mjs
       - run: npm run typecheck
+      - run: npm run typecheck --prefix worker
+      - run: npm run build --prefix worker
+      - run: docker build --target build --tag voidstation-assistant-worker:test worker
+      - run: docker build --target runtime --tag voidstation-assistant-worker:check worker
+      - run: node scripts/worker-runtime-inspect.mjs voidstation-assistant-worker:check voidstation-assistant-worker:test
       - run: npm test
         env:
           NEXT_TELEMETRY_DISABLED: "1"
