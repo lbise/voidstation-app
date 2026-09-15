@@ -57,7 +57,7 @@ The worker token is a file with at least 32 non-whitespace characters, not an en
 
 ### Certificates
 
-Follow [production LAN certificates](lan-certificates.md) for issuance, manual renewal, secure key storage, Arch/Android trust, and recovery. Mount only `cert.pem`, `key.pem`, and the public `ca.pem`; the CA signing key stays offline. Preflight verifies the IP, server purpose, CA chain, expiry, and key pair. A valid chain on the Server does not prove a phone trusts the CA. Verify each actual client without warning bypasses.
+Run `scripts/setup-lan-certificates.sh` on the Arch laptop for scripted issuance/renewal, SSH transfer, and optionally Server installation. Follow [the per-machine certificate instructions](lan-certificates.md) for secure key storage, Arch/Android trust, and recovery. Mount only `cert.pem`, `key.pem`, and the public `ca.pem`; the CA signing key stays offline. Preflight verifies the IP, server purpose, CA chain, expiry, and key pair. A valid chain on the Server does not prove a phone trusts the CA. Verify each actual client without warning bypasses.
 
 Keep Tailscale issuance and its renewal timer. Replace `name.tailnet.ts.net` below with the exact hostname from `VOIDSTATION_ORIGIN`:
 
@@ -71,7 +71,7 @@ Provisioning records the hostname in root-owned `/etc/voidstation/hostname` and 
 
 The existing daily Tailscale renewal helper checks hostname, expiry, and key matching before replacing a pair. It serializes manual/timer runs with `flock`, restarts only the running Dashboard when a changed certificate needs reloading, and records failed restarts for retry. A healthy unchanged certificate causes no restart. Inspect `systemctl status voidstation-certificate-renewal.timer` and `journalctl -u voidstation-certificate-renewal.service`.
 
-LAN renewal is manual with the offline CA. Set a reminder 60 days before expiry; preflight refuses a leaf within 30 days of expiry. Certificate trust changes, initial signing, and certificate replacement remain owner-controlled.
+LAN renewal is owner-initiated with the password-protected CA on the laptop. Re-run the certificate wizard with the same state directory. Set a reminder 60 days before expiry; preflight refuses a leaf within 30 days of expiry. Certificate trust changes, initial signing, and certificate replacement remain owner-controlled.
 
 ## Persistent ingress and first cutover
 
@@ -152,7 +152,7 @@ npm run docker:logs
 
 Preflight resolves effective Compose configuration and rejects extra services, environment overrides, unsafe publication, invalid origins, mismatched certificates or policy, Funnel, inaccessible state, unexpected mounts, root execution, added capabilities, privilege escalation, or conflicting ports. It checks mounted inputs as UID/GID 1000 with supplementary groups cleared, so root's permissions cannot hide runtime failures.
 
-Production updates check both existing HTTPS paths before changes, build only Dashboard and assistant-worker, inspect the built worker, recheck configuration, start only those services, then inspect running containers and require certificate-verified login responses on both paths. `ca.pem` supplies trust only for the LAN probe; Tailscale uses normal public trust. Do not use `-k`, `NODE_TLS_REJECT_UNAUTHORIZED=0`, `next start`, or permissive CORS as a workaround. A failed probe must identify the path that failed. A successful Server-local probe does not prove remote reachability.
+Production updates check both existing HTTPS paths before changes, build only Dashboard and assistant-worker, inspect the built worker, and recheck configuration. They update the worker without forcing an unchanged image to restart, then recreate the Dashboard so changed certificate files load even when its image is unchanged. Postdeploy inspects both containers and requires certificate-verified login responses on both paths. `ca.pem` supplies trust only for the LAN probe; Tailscale uses normal public trust. Do not use `-k`, `NODE_TLS_REJECT_UNAUTHORIZED=0`, `next start`, or permissive CORS as a workaround. A failed probe must identify the path that failed. A successful Server-local probe does not prove remote reachability.
 
 Both containers run as UID/GID 1000 with all capabilities dropped, no-new-privileges, read-only code, and a restricted `/tmp` tmpfs. The Dashboard retains its five narrow read-only metrics mounts, writable auth bind, read-only token, and two read-only TLS mounts. The worker has only the read-only token plus separate writable conversation and credential binds. Neither has a Docker socket or development workspace. The worker has no host port, TLS keys, Dashboard auth database, or host-metrics mounts.
 

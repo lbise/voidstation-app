@@ -39,13 +39,15 @@ it("refuses production changes if either existing HTTPS path fails predeploy val
   expect(result.commands).toEqual(["node scripts/deployment-preflight.mjs --predeploy"]);
 });
 
-it("checks both paths before builds and after starting only the production services", () => {
+it("checks both paths and reloads certificates without forcing an unchanged worker to restart", () => {
   const result = update();
   expect(result.status, result.stderr).toBe(0);
   expect(result.commands[0]).toBe("node scripts/deployment-preflight.mjs --predeploy");
   expect(result.commands).toContain("docker compose --project-name voidstation-app build dashboard assistant-worker");
   expect(result.commands).toContain("node scripts/worker-runtime-inspect.mjs fixture-worker-image");
-  expect(result.commands).toContain("docker compose --project-name voidstation-app up --no-build -d --no-deps dashboard assistant-worker");
+  expect(result.commands).toContain("docker compose --project-name voidstation-app up --no-build -d --no-deps assistant-worker");
+  expect(result.commands).toContain("docker compose --project-name voidstation-app up --no-build -d --no-deps --force-recreate dashboard");
+  expect(result.commands.some((command) => command.includes("--force-recreate") && command.includes("assistant-worker"))).toBe(false);
   expect(result.commands.at(-1)).toBe("node scripts/deployment-preflight.mjs --postdeploy");
 });
 

@@ -36,6 +36,9 @@ fi
 node scripts/worker-runtime-inspect.mjs "$worker_image"
 node scripts/deployment-preflight.mjs
 printf 'Preflight passed. Starting the dashboard and assistant-worker.\n'
-docker compose --project-name voidstation-app up --no-build -d --no-deps dashboard assistant-worker
+docker compose --project-name voidstation-app up --no-build -d --no-deps assistant-worker
+# A new certificate directory does not change the image or Compose configuration.
+# Recreate the Dashboard to load it, but do not force an unchanged worker restart.
+docker compose --project-name voidstation-app up --no-build -d --no-deps --force-recreate dashboard
 node scripts/deployment-preflight.mjs --postdeploy
 printf 'Dashboard and assistant-worker passed post-deploy inspection.\n'

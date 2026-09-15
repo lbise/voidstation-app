@@ -100,6 +100,8 @@ An unavailable measurement has `status: "unavailable"`, `value: null`, `observed
 
 Follow [the deployment runbook](docs/deployment.md) to configure the ignored `.env`, reuse or bootstrap the owner account, provision both HTTPS certificates, and verify filesystem identities. Production serves the same application and durable state through explicit LAN and Tailscale HTTPS origins. LAN clients work with Tailscale disabled. The owner selected a reserved LAN IP on port 3000 and a dedicated private CA, with [one-time trust installation on Arch Linux and Android](docs/lan-certificates.md). No router DNS or DDNS change is needed. There is no plaintext application listener, public registration, or Funnel.
 
+For certificate setup, run `bash scripts/setup-lan-certificates.sh LAN_IP` **on the Arch laptop**, not the Server. The wizard issues or renews the certificate, offers SSH transfer and Server installation, and prepares the Arch/Android trust files. It never deploys the app or changes the firewall. See [the per-machine commands](docs/lan-certificates.md).
+
 ```sh
 npm run docker:check    # Validate both TLS paths, ingress policy, mounts, and ports
 ./deploy.sh             # Check, build, and update Dashboard plus assistant-worker
