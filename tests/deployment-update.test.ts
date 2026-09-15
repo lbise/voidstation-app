@@ -16,7 +16,11 @@ if [[ -n "\${FAIL_COMMAND:-}" && "$*" == "$FAIL_COMMAND" ]]; then
   exit 1
 fi`,
       docker: `printf 'docker %s\n' "$*" >> "$COMMAND_LOG"
-if [[ "$*" == *"images --quiet assistant-worker" ]]; then echo fixture-worker-image; fi`,
+if [[ "$*" == *"config --images assistant-worker" ]]; then echo fixture-worker-image; fi
+if [[ "$*" == *"images --quiet assistant-worker" && "\${EXISTING_WORKER:-true}" != false ]]; then echo fixture-worker-image; fi
+if [[ "$*" == "image inspect --format {{.Id}} fixture-worker-image" ]]; then echo sha256:fixture-worker-image; fi
+if [[ "$*" == *"ps --quiet assistant-worker" ]]; then echo fixture-worker-container; fi
+if [[ "$*" == "inspect --format {{.Image}} fixture-worker-container" ]]; then echo "\${STARTED_WORKER_IMAGE:-sha256:fixture-worker-image}"; fi`,
     };
     for (const [name, body] of Object.entries(commands)) {
       const command = join(directory, name);
@@ -44,7 +48,7 @@ it("checks both paths and reloads certificates without forcing an unchanged work
   expect(result.status, result.stderr).toBe(0);
   expect(result.commands[0]).toBe("node scripts/deployment-preflight.mjs --predeploy");
   expect(result.commands).toContain("docker compose --project-name voidstation-app build dashboard assistant-worker");
-  expect(result.commands).toContain("node scripts/worker-runtime-inspect.mjs fixture-worker-image");
+  expect(result.commands).toContain("node scripts/worker-runtime-inspect.mjs sha256:fixture-worker-image");
   expect(result.commands).toContain("docker compose --project-name voidstation-app up --no-build -d --no-deps assistant-worker");
   expect(result.commands).toContain("docker compose --project-name voidstation-app up --no-build -d --no-deps --force-recreate dashboard");
   expect(result.commands.some((command) => command.includes("--force-recreate") && command.includes("assistant-worker"))).toBe(false);
@@ -52,7 +56,7 @@ it("checks both paths and reloads certificates without forcing an unchanged work
 });
 
 it("does not restart production when the built worker fails isolation inspection", () => {
-  const result = update([], { FAIL_COMMAND: "scripts/worker-runtime-inspect.mjs fixture-worker-image" });
+  const result = update([], { FAIL_COMMAND: "scripts/worker-runtime-inspect.mjs sha256:fixture-worker-image" });
   expect(result.status).not.toBe(0);
   expect(result.commands.some((command) => command.includes(" up "))).toBe(false);
 });
@@ -65,6 +69,40 @@ it("requires explicit owner acknowledgment before skipping initial LAN readiness
   expect(accepted.status, accepted.stderr).toBe(0);
   expect(accepted.commands[0]).toBe("node scripts/deployment-preflight.mjs --precutover");
   expect(accepted.commands.at(-1)).toBe("node scripts/deployment-preflight.mjs --postdeploy");
+});
+
+it("inspects the configured built worker image before starting the first worker", () => {
+  const result = update(["--cutover"], {
+    VOIDSTATION_INITIAL_LAN_CUTOVER: "approved",
+    EXISTING_WORKER: "false",
+  });
+  expect(result.status, result.stderr).toBe(0);
+  const imageInspection = "docker image inspect --format {{.Id}} fixture-worker-image";
+  const workerAudit = "node scripts/worker-runtime-inspect.mjs sha256:fixture-worker-image";
+  const workerStart = "docker compose --project-name voidstation-app up --no-build -d --no-deps assistant-worker";
+  expect(result.commands).toContain("docker compose --project-name voidstation-app config --images assistant-worker");
+  expect(result.commands).toContain(imageInspection);
+  expect(result.commands.some((command) => command.includes("images --quiet assistant-worker"))).toBe(false);
+  expect(result.commands.indexOf(imageInspection)).toBeLessThan(result.commands.indexOf(workerAudit));
+  expect(result.commands.indexOf(workerAudit)).toBeLessThan(result.commands.indexOf(workerStart));
+});
+
+it("stops before dashboard recreation when the worker starts from a different image", () => {
+  const result = update([], { STARTED_WORKER_IMAGE: "sha256:unexpected-worker-image" });
+  const workerStart = "docker compose --project-name voidstation-app up --no-build -d --no-deps assistant-worker";
+  const workerLookup = "docker compose --project-name voidstation-app ps --quiet assistant-worker";
+  const startedImageInspection = "docker inspect --format {{.Image}} fixture-worker-container";
+  const dashboardStart = "docker compose --project-name voidstation-app up --no-build -d --no-deps --force-recreate dashboard";
+  expect(result.status).not.toBe(0);
+  expect(result.commands).toContain(workerStart);
+  expect(result.commands).toContain(workerLookup);
+  expect(result.commands).toContain(startedImageInspection);
+  expect(result.commands.indexOf(workerStart)).toBeLessThan(result.commands.indexOf(workerLookup));
+  expect(result.commands.indexOf(workerLookup)).toBeLessThan(result.commands.indexOf(startedImageInspection));
+  expect(result.commands).not.toContain(dashboardStart);
+  expect(result.commands).not.toContain("node scripts/deployment-preflight.mjs --postdeploy");
+  expect(result.stderr).toContain("Started assistant-worker image does not match the audited image.");
+  expect(result.stdout).not.toContain("passed post-deploy inspection");
 });
 
 it("does not build during cutover when the existing Tailscale login probe fails", () => {
