@@ -32,6 +32,7 @@ function main() {
     `VOIDSTATION_WORKER_TOKEN_FILE=${fixture}/worker-token`,
     `VOIDSTATION_CONVERSATION_DIRECTORY=${fixture}/conversations`,
     `VOIDSTATION_CREDENTIAL_DIRECTORY=${fixture}/credentials`,
+    `VOIDSTATION_MEDIA_CONFIG_DIRECTORY=${fixture}/media`,
     `VOIDSTATION_ROOT_FILESYSTEM_PATH=${fixture}/root`,
     `VOIDSTATION_DATA_FILESYSTEM_PATH=${fixture}/data`,
     "",
@@ -70,6 +71,7 @@ function main() {
       VOIDSTATION_WORKER_TOKEN_FILE: "/run/voidstation-worker/token",
       VOIDSTATION_CONVERSATION_DIR: "/var/lib/voidstation/conversations",
       VOIDSTATION_CREDENTIAL_DIR: "/var/lib/voidstation/credentials",
+      VOIDSTATION_MEDIA_CONFIG_FILE: "/run/voidstation-media/config.json",
     };
     if (Object.keys(workerEnvironment).length !== Object.keys(expectedWorkerEnvironment).length ||
         Object.entries(expectedWorkerEnvironment).some(([name, value]) => workerEnvironment[name] !== value)) {
@@ -80,7 +82,7 @@ function main() {
       fail("Assistant-worker effective build must use worker/Dockerfile.");
     }
     const targets = (worker.volumes ?? []).map((volume) => volume.target).sort();
-    if (JSON.stringify(targets) !== JSON.stringify(["/run/voidstation-worker/token", "/var/lib/voidstation/conversations", "/var/lib/voidstation/credentials"])) {
+    if (JSON.stringify(targets) !== JSON.stringify(["/run/voidstation-media", "/run/voidstation-worker/token", "/var/lib/voidstation/conversations", "/var/lib/voidstation/credentials"])) {
       fail("Assistant-worker effective mounts changed.");
     }
     for (const service of [dashboard, worker]) {

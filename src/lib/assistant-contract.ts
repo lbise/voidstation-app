@@ -1,3 +1,6 @@
+import type { MediaResult, SavedMediaResult } from "../../worker/src/media-contract";
+export type { MediaResult, SavedMediaResult } from "../../worker/src/media-contract";
+
 export type TurnStatus = "running" | "complete" | "interrupted" | "failure";
 
 export type Turn = {
@@ -24,6 +27,7 @@ export type Conversation = {
 
 export type ConversationDetail = Conversation & {
   messages: Message[];
+  mediaResults: SavedMediaResult[];
 };
 
 export type ErrorResponse = {

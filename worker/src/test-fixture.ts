@@ -25,6 +25,7 @@ interface FixtureStep {
   rawError?: string;
   fault?: "construct" | "iterator";
   ignoreAbort?: boolean;
+  toolCalls?: { name: string; arguments: Record<string, unknown> }[];
 }
 
 interface Fixture {
@@ -115,6 +116,19 @@ export function installFixtureModel(runtime: ModelRuntime): Model<any> {
         }
         if (step.delayMs) await sleep(step.delayMs, options?.signal);
         if (step.error) throw new Error(`${step.error}: ${step.rawError ?? step.error}`);
+        if (step.toolCalls) {
+          stream.push({ type: "start", partial: output });
+          for (const [index, call] of step.toolCalls.entries()) {
+            const toolCall = { type: "toolCall" as const, id: `fixture-${invocation}-${index}`, name: call.name, arguments: call.arguments };
+            output.content.push(toolCall);
+            stream.push({ type: "toolcall_start", contentIndex: index, partial: output });
+            stream.push({ type: "toolcall_end", contentIndex: index, toolCall, partial: output });
+          }
+          output.stopReason = "toolUse";
+          stream.push({ type: "done", reason: "toolUse", message: output });
+          stream.end();
+          return;
+        }
         const chunks = step.chunks ?? [{ text: step.text ?? "" }];
         if (!Array.isArray(chunks) || chunks.some((chunk) => typeof chunk?.text !== "string" || (chunk.delayMs !== undefined && (!Number.isFinite(chunk.delayMs) || chunk.delayMs < 0)))) {
           throw new Error("unavailable: invalid fixture chunks");

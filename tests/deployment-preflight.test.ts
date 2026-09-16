@@ -136,6 +136,7 @@ function lockedWorker(paths: Paths): Record<string, any> {
       VOIDSTATION_WORKER_TOKEN_FILE: "/run/voidstation-worker/token",
       VOIDSTATION_CONVERSATION_DIR: "/var/lib/voidstation/conversations",
       VOIDSTATION_CREDENTIAL_DIR: "/var/lib/voidstation/credentials",
+      VOIDSTATION_MEDIA_CONFIG_FILE: "/run/voidstation-media/config.json",
     },
     read_only: true,
     cap_drop: ["ALL"],
@@ -145,6 +146,7 @@ function lockedWorker(paths: Paths): Record<string, any> {
       bind(paths.token, "/run/voidstation-worker/token"),
       bind(paths.conversations, "/var/lib/voidstation/conversations", false),
       bind(paths.credentials, "/var/lib/voidstation/credentials", false),
+      bind(paths.media, "/run/voidstation-media"),
     ],
   };
 }
@@ -169,6 +171,7 @@ function deployedWorker(paths: Paths): Record<string, any> {
         "VOIDSTATION_WORKER_TOKEN_FILE=/run/voidstation-worker/token",
         "VOIDSTATION_CONVERSATION_DIR=/var/lib/voidstation/conversations",
         "VOIDSTATION_CREDENTIAL_DIR=/var/lib/voidstation/credentials",
+        "VOIDSTATION_MEDIA_CONFIG_FILE=/run/voidstation-media/config.json",
       ],
       Labels: {
         "com.docker.compose.project": "voidstation-app",
@@ -206,6 +209,12 @@ function deployedWorker(paths: Paths): Record<string, any> {
         Source: paths.credentials,
         Destination: "/var/lib/voidstation/credentials",
         RW: true,
+      },
+      {
+        Type: "bind",
+        Source: paths.media,
+        Destination: "/run/voidstation-media",
+        RW: false,
       },
     ],
     State: { Running: true, Restarting: false },
@@ -336,6 +345,7 @@ async function runPreflight(
   const token = join(workspace, "worker-token");
   const conversations = join(workspace, "conversations");
   const credentials = join(workspace, "credentials");
+  const media = join(workspace, "media");
   const data = await mkdtemp(join("/dev/shm", "voidstation-preflight-data-"));
   workspaces.push(data);
   const paths = {
@@ -347,6 +357,7 @@ async function runPreflight(
     token,
     conversations,
     credentials,
+    media,
   };
   await Promise.all([
     mkdir(bin),
@@ -356,6 +367,7 @@ async function runPreflight(
     mkdir(lanTls, { mode: 0o700 }),
     mkdir(conversations, { mode: 0o700 }),
     mkdir(credentials, { mode: 0o700 }),
+    mkdir(media, { mode: 0o700 }),
   ]);
   await Promise.all([
     chmod(auth, 0o700),
@@ -363,10 +375,17 @@ async function runPreflight(
     chmod(lanTls, 0o700),
     chmod(conversations, 0o700),
     chmod(credentials, 0o700),
+    chmod(media, 0o700),
     writeFile(token, "a-worker-token-with-at-least-thirty-two-characters", {
       mode: 0o600,
     }),
   ]);
+  await writeFile(join(media, "radarr.key"), "radarr-fixture-key\n", { mode: 0o600 });
+  await writeFile(join(media, "sonarr.key"), "sonarr-fixture-key\n", { mode: 0o600 });
+  await writeFile(join(media, "config.json"), JSON.stringify({
+    radarr: { endpoint: "http://127.0.0.1:7878", keyFile: "/run/voidstation-media/radarr.key", rootFolder: "/media/movies", defaultQualityProfileId: 4, qualityMappings: { "4K": 7 } },
+    sonarr: { endpoint: "http://127.0.0.1:8989", keyFile: "/run/voidstation-media/sonarr.key", rootFolder: "/media/series", defaultQualityProfileId: 5, qualityMappings: { "4K": 9 } },
+  }), { mode: 0o600 });
   await writeFile(join(tls, "cert.pem"), "fixture certificate\n");
   await writeFile(join(tls, "key.pem"), "fixture key\n", { mode: 0o600 });
   await writeFile(join(lanTls, "cert.pem"), "fixture certificate\n");

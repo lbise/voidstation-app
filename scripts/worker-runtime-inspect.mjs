@@ -64,6 +64,9 @@ function requireInstalledPackages(image) {
     const packageInfo = (name) => JSON.parse(readFileSync(\`/app/node_modules/\${name}/package.json\`, "utf8")).version;
     console.log(JSON.stringify({ ai: packageInfo("@earendil-works/pi-ai"), agent: packageInfo("@earendil-works/pi-coding-agent") }));
   `], "Reading installed Pi package versions"));
+  const requestsVersion = docker(["run", "--rm", "--entrypoint", "python3", image, "-c", "import requests; print(requests.__version__)"], "Checking the pinned Python requests runtime").trim();
+  const pinnedRequests = readFileSync("worker/media/requirements.txt", "utf8").match(/^requests==(\d+\.\d+\.\d+)$/m)?.[1];
+  if (!pinnedRequests || requestsVersion !== pinnedRequests) fail(`Installed requests ${requestsVersion} does not match pinned ${pinnedRequests ?? "unknown"}.`);
   const manifest = JSON.parse(docker(["run", "--rm", "--entrypoint", "node", image, "--input-type=module", "-e", `
     import { readFileSync } from "node:fs";
     const value = JSON.parse(readFileSync("/app/package.json", "utf8"));
@@ -100,6 +103,7 @@ function inspectContainer(id, fixture) {
     ["/run/voidstation-worker/token", [fixture.token, false]],
     ["/var/lib/voidstation/conversations", [fixture.conversations, true]],
     ["/var/lib/voidstation/credentials", [fixture.credentials, true]],
+    ["/run/voidstation-media", [fixture.media, false]],
   ]);
   if (container.Mounts?.length !== expectedMounts.size) fail("The isolated worker container mount count changed.");
   for (const [target, [source, writable]] of expectedMounts) {
@@ -145,11 +149,13 @@ function startWorker(image, name, fixture, state, extraEnvironment = [], testIma
     "--env", "VOIDSTATION_WORKER_TOKEN_FILE=/run/voidstation-worker/token",
     "--env", "VOIDSTATION_CONVERSATION_DIR=/var/lib/voidstation/conversations",
     "--env", "VOIDSTATION_CREDENTIAL_DIR=/var/lib/voidstation/credentials",
+    "--env", "VOIDSTATION_MEDIA_CONFIG_FILE=/run/voidstation-media/config.json",
     ...extraEnvironment, ...testFixture,
     "--volume", `${fixture.home}:/home/node:ro`, "--volume", `${fixture.cwd}:/voidstation:ro`,
     "--volume", `${fixture.token}:/run/voidstation-worker/token:ro`,
     "--volume", `${state.conversations}:/var/lib/voidstation/conversations`,
     "--volume", `${state.credentials}:/var/lib/voidstation/credentials`,
+    "--volume", `${fixture.media}:/run/voidstation-media:ro`,
     ...command], "Starting an isolated worker runtime");
 }
 
@@ -188,7 +194,8 @@ function requireFixtureTurnIsolation(image, fixture) {
     }
     if (captures.length === 0) fail("The deterministic fixture did not capture a real Pi model context.");
     const capture = captures.at(-1);
-    if (!Array.isArray(capture.tools) || capture.tools.length !== 0) fail("The real Pi model context exposed tools.");
+    const expectedTools = ["read_skill", "media_lookup", "media_discover", "media_status"];
+    if (JSON.stringify(capture.tools) !== JSON.stringify(expectedTools)) fail("The real Pi model context exposed an unexpected tool set.");
     if (typeof capture.systemPrompt !== "string") fail("The model capture omitted its system prompt.");
     const serialized = JSON.stringify(capture);
     for (const canary of ["HOST_PI_SKILL_CANARY", "HOST_AGENTS_SKILL_CANARY", "CWD_SKILL_CANARY", "CWD_AGENTS_CANARY", "synthetic-host-auth", "HOST_PI_EXECUTABLE_CANARY"]) {
@@ -229,6 +236,7 @@ function createFixtures() {
   const cwd = path.join(root, "workspace");
   const conversations = path.join(root, "conversations");
   const credentials = path.join(root, "credentials");
+  const media = path.join(root, "media");
   const refusalConversations = path.join(root, "refusal-conversations");
   const refusalCredentials = path.join(root, "refusal-credentials");
   const token = path.join(root, "worker-token");
@@ -242,6 +250,16 @@ function createFixtures() {
   mkdirSync(path.join(cwd, ".pi"), { recursive: true });
   mkdirSync(conversations, { recursive: true });
   mkdirSync(credentials, { recursive: true });
+  mkdirSync(media, { recursive: true });
+  writeFileSync(path.join(media, "radarr.key"), "synthetic-media-key");
+  writeFileSync(path.join(media, "sonarr.key"), "synthetic-media-key");
+  writeFileSync(path.join(media, "config.json"), JSON.stringify({
+    radarr: { endpoint: "http://127.0.0.1:7878", keyFile: "/run/voidstation-media/radarr.key", rootFolder: "/media/movies", defaultQualityProfileId: 1, qualityMappings: { "4K": 2 } },
+    sonarr: { endpoint: "http://127.0.0.1:8989", keyFile: "/run/voidstation-media/sonarr.key", rootFolder: "/media/series", defaultQualityProfileId: 1, qualityMappings: { "4K": 2 } }
+  }));
+  chmodSync(path.join(media, "config.json"), 0o600);
+  chmodSync(path.join(media, "radarr.key"), 0o600);
+  chmodSync(path.join(media, "sonarr.key"), 0o600);
   mkdirSync(refusalConversations, { recursive: true });
   mkdirSync(refusalCredentials, { recursive: true });
   writeFileSync(path.join(home, ".pi", "agent", "settings.json"), '{"extensions":["./extensions/unsafe.mjs"]}');
@@ -259,10 +277,10 @@ function createFixtures() {
   writeFileSync(model, '{"steps":[{"text":"test reply"}]}');
   writeFileSync(assertions, "");
   chmodSync(path.join(home, "bin", "pi"), 0o755);
-  for (const directory of [root, home, cwd, conversations, credentials, refusalConversations, refusalCredentials]) chmodSync(directory, 0o777);
+  for (const directory of [root, home, cwd, conversations, credentials, media, refusalConversations, refusalCredentials]) chmodSync(directory, 0o777);
   chmodSync(token, 0o644);
   chmodSync(assertions, 0o666);
-  return { root, home, cwd, conversations, credentials, refusalConversations, refusalCredentials, token, model, assertions, tokenValue };
+  return { root, home, cwd, conversations, credentials, media, refusalConversations, refusalCredentials, token, model, assertions, tokenValue };
 }
 
 function requireRuntimeIsolation(image, testImage) {
@@ -276,9 +294,11 @@ function requireRuntimeIsolation(image, testImage) {
       "--env", "VOIDSTATION_WORKER_TOKEN_FILE=/run/voidstation-worker/token",
       "--env", "VOIDSTATION_CONVERSATION_DIR=/var/lib/voidstation/conversations",
       "--env", "VOIDSTATION_CREDENTIAL_DIR=/var/lib/voidstation/credentials",
+      "--env", "VOIDSTATION_MEDIA_CONFIG_FILE=/run/voidstation-media/config.json",
       "--volume", `${fixture.token}:/run/voidstation-worker/token:ro`,
       "--volume", `${fixture.conversations}:/var/lib/voidstation/conversations`,
-      "--volume", `${fixture.credentials}:/var/lib/voidstation/credentials`, image], "Starting the isolated worker runtime");
+      "--volume", `${fixture.credentials}:/var/lib/voidstation/credentials`,
+      "--volume", `${fixture.media}:/run/voidstation-media:ro`, image], "Starting the isolated worker runtime");
     inspectContainer(containerName, fixture);
     healthCheck(containerName, fixture.tokenValue);
     // A new container process commonly reuses PID 1. Its predecessor's lock

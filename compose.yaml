@@ -119,6 +119,7 @@ services:
       VOIDSTATION_WORKER_TOKEN_FILE: "/run/voidstation-worker/token"
       VOIDSTATION_CONVERSATION_DIR: "/var/lib/voidstation/conversations"
       VOIDSTATION_CREDENTIAL_DIR: "/var/lib/voidstation/credentials"
+      VOIDSTATION_MEDIA_CONFIG_FILE: "/run/voidstation-media/config.json"
     read_only: true
     cap_drop:
       - ALL
@@ -141,5 +142,13 @@ services:
       - type: bind
         source: "${VOIDSTATION_CREDENTIAL_DIRECTORY:?Set VOIDSTATION_CREDENTIAL_DIRECTORY in .env}"
         target: /var/lib/voidstation/credentials
+        bind:
+          create_host_path: false
+      # This directory contains config.json and the two selected service key
+      # files. It is mounted only into the worker and remains read-only.
+      - type: bind
+        source: "${VOIDSTATION_MEDIA_CONFIG_DIRECTORY:?Set VOIDSTATION_MEDIA_CONFIG_DIRECTORY in .env}"
+        target: /run/voidstation-media
+        read_only: true
         bind:
           create_host_path: false

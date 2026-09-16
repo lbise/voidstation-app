@@ -203,6 +203,9 @@ export async function assistantServer() {
           VOIDSTATION_WORKER_PORT: String(workerPort), VOIDSTATION_WORKER_TOKEN_FILE: tokenFile,
           VOIDSTATION_CONVERSATION_DIR: join(directory, "conversations"),
           VOIDSTATION_CREDENTIAL_DIR: join(directory, "credentials"),
+          VOIDSTATION_MEDIA_SKILLS_DIR: join(process.cwd(), "worker/skills"),
+          VOIDSTATION_MEDIA_SCRIPT_DIR: join(process.cwd(), "worker/media/upstream"),
+          VOIDSTATION_MEDIA_CONFIG_FILE: join(directory, "media.json"),
           VOIDSTATION_TEST_MODEL_FILE: fixtureFile, ...extraEnv }, stdio: ["ignore", "pipe", "pipe"],
       }));
       try {
@@ -214,7 +217,7 @@ export async function assistantServer() {
       } catch (error) { await stop(worker); worker = undefined; throw error; }
     },
     async stopWorker(signal: NodeJS.Signals = "SIGTERM") { await stop(worker, signal); worker = undefined; },
-    async fixture(steps: { text?: string; chunks?: { text: string; delayMs?: number }[]; delayMs?: number; error?: string; rawError?: string; fault?: string; ignoreAbort?: boolean }[]) {
+    async fixture(steps: { text?: string; chunks?: { text: string; delayMs?: number }[]; toolCalls?: { name: string; arguments: unknown }[]; delayMs?: number; error?: string; rawError?: string; fault?: string; ignoreAbort?: boolean }[]) {
       await writeFile(fixtureFile, JSON.stringify({ steps }));
     },
     async close() {

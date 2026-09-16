@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "repository": "dotfiles",
+    "revision": "83d756b608889ae56de80dd0b2ff9c6d6def582d"
+  },
+  "files": [
+    {
+      "path": "radarr/SKILL.md",
+      "sourcePath": "dot/.agents/skills-catalog/radarr/SKILL.md",
+      "sha256": "961d1788f4419d87feb9b5b4a80c3b7c84b68f4bdbf32da0db5f1f45decc0697"
+    },
+    {
+      "path": "sonarr/SKILL.md",
+      "sourcePath": "dot/.agents/skills-catalog/sonarr/SKILL.md",
+      "sha256": "008004298ffcab7cd3e9e824efcd22367a404f63db3fe1527af0b6d7097d9347"
+    }
+  ]
+}

@@ -55,6 +55,29 @@ sudo chmod 0600 /var/lib/voidstation/worker-token
 
 The worker token is a file with at least 32 non-whitespace characters, not an environment value. Do not put it in logs, shell arguments, or browser responses. Conversation transcripts and private provider refresh state stay in separate worker-owned directories, distinct from Dashboard authentication. Complete the worker's [independent device-code login](../worker/README.md#codex-login) from an owner-controlled terminal. Never copy the Server's development Pi or Codex credentials.
 
+### Media service configuration
+
+The Assistant only performs read-only title lookup, configured-resource discovery, and status checks. It does not add, update, delete, search, or change Radarr/Sonarr configuration. Create the worker-only directory with mode `0700`, owned by UID/GID 1000:
+
+```sh
+sudo install -d -o 1000 -g 1000 -m 0700 /var/lib/voidstation/media
+sudo install -o 1000 -g 1000 -m 0600 /path/to/media-config.json /var/lib/voidstation/media/config.json
+sudo install -o 1000 -g 1000 -m 0600 /path/to/radarr-key /var/lib/voidstation/media/radarr.key
+sudo install -o 1000 -g 1000 -m 0600 /path/to/sonarr-key /var/lib/voidstation/media/sonarr.key
+```
+
+Use `/run/voidstation-media/radarr.key` and `/run/voidstation-media/sonarr.key` as the `keyFile` values inside the container config. The config must contain both services, HTTPS or HTTP endpoints without credentials or query strings, normalized root folders, positive profile IDs, and explicit quality mappings. The preflight validates those resources and the worker validates them again against each service. Do not put API keys, provider credentials, or real endpoint secrets in `.env`, chat, logs, or source control. A clean example is in `.env.example`; the actual JSON stays outside the repository.
+
+Update shared skills from a committed dotfiles revision, then verify the resulting snapshot:
+
+```sh
+python3 scripts/update-worker-skills.py --update --source-root /path/to/dotfiles
+python3 scripts/update-worker-skills.py --check
+npm ci --prefix worker
+```
+
+The command records the dotfiles revision and SHA-256 files in `worker/skills/`. The worker image copies this snapshot and its fixed Python adapters into a read-only image layer. Runtime changes require an image rebuild. Do not mount the development Pi, dotfiles checkout, or a writable skill directory into the worker.
+
 ### Certificates
 
 Run `scripts/setup-lan-certificates.sh` on the Arch laptop for scripted issuance/renewal, SSH transfer, and optionally Server installation. Follow [the per-machine certificate instructions](lan-certificates.md) for secure key storage, Arch/Android trust, and recovery. Mount only `cert.pem`, `key.pem`, and the public `ca.pem`; the CA signing key stays offline. Preflight verifies the IP, server purpose, CA chain, expiry, and key pair. A valid chain on the Server does not prove a phone trusts the CA. Verify each actual client without warning bypasses.
@@ -233,7 +256,7 @@ export BACKUP=/path/to/private/voidstation-backup.tar.age
 export AGE_RECIPIENT=age1... # The owner's public age recipient, not a credential.
 umask 077
 docker compose --project-name voidstation-app stop dashboard assistant-worker
-sudo tar -C /var/lib/voidstation -cf - auth conversations worker-credentials worker-token \
+sudo tar -C /var/lib/voidstation -cf - auth conversations worker-credentials media worker-token \
   | age -r "$AGE_RECIPIENT" -o "$BACKUP"
 # Confirm the entire pipeline succeeded before restarting.
 docker compose --project-name voidstation-app start assistant-worker dashboard
@@ -250,7 +273,7 @@ install -d -m 0700 "$RESTORE"
 age -d -i "$AGE_IDENTITY" "$BACKUP" | tar -xf - -C "$RESTORE"
 ```
 
-Verify the entries are the intended auth, conversations, worker-credentials directories and worker-token file. Replace only corresponding stopped-deployment state. Restore directories to UID/GID 1000 mode 0700 and the token and auth database to UID/GID 1000 mode 0600. Run static preflight before restarting. For restoration into the same validated configuration, use `docker compose --project-name voidstation-app start assistant-worker dashboard`, then `node scripts/deployment-preflight.mjs --postdeploy`. If containers need replacement, use the saved-image recovery procedure above instead of bypassing ordinary update readiness checks. Check both paths afterward.
+Verify the entries are the intended auth, conversations, worker-credentials, and media directories plus the worker-token file. Replace only corresponding stopped-deployment state. Restore directories to UID/GID 1000 mode 0700 and the token and auth database to UID/GID 1000 mode 0600. Run static preflight before restarting. For restoration into the same validated configuration, use `docker compose --project-name voidstation-app start assistant-worker dashboard`, then `node scripts/deployment-preflight.mjs --postdeploy`. If containers need replacement, use the saved-image recovery procedure above instead of bypassing ordinary update readiness checks. Check both paths afterward.
 
 Worker startup marks unfinished turns interrupted and never replays them. Future action and approval records must follow this lifecycle: a restored approval is not an execution queue, expired approvals stay expired, and uncertain effects need current-service evidence before another request. Deleting an idle conversation removes current transcripts and associated future action/approval records, never media. Retained backups still contain deleted history. Set a retention period and remove expired encrypted backups yourself; automatic scheduling and retention are not implemented.
 

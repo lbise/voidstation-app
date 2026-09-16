@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "repository": "dotfiles",
+    "revision": "83d756b608889ae56de80dd0b2ff9c6d6def582d"
+  },
+  "files": [
+    {
+      "path": "radarr.py",
+      "sourcePath": "scripts/radarr.py",
+      "sha256": "31add7cb144c0ec419cadeb3635a99a55eda2c4f142343effa01ba21e4960cb2"
+    },
+    {
+      "path": "sonarr.py",
+      "sourcePath": "scripts/sonarr.py",
+      "sha256": "485463cec087db600ed9eeece72b9cc09814a9ce441dfb6ab595bb13c7206510"
+    },
+    {
+      "path": "media_restricted.py",
+      "sourcePath": "scripts/media_restricted.py",
+      "sha256": "36519ddc704719a478a77f05503265b648811fc0274c27d82816edea7491f221"
+    }
+  ]
+}

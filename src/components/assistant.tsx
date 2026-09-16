@@ -59,6 +59,8 @@ import type {
   Message as AssistantMessage,
   Turn,
   TurnStatus,
+  MediaResult,
+  SavedMediaResult,
 } from "@/lib/assistant-contract";
 
 type RequestResult<T> =
@@ -98,9 +100,14 @@ function isTurn(value: unknown): value is Turn {
   );
 }
 
+function isMediaResult(value: unknown): value is MediaResult {
+  return isRecord(value) && (value.kind === "skill" || value.kind === "lookup" || value.kind === "discovery" || value.kind === "status" || value.kind === "error");
+}
+
 function isConversationDetail(value: unknown): value is ConversationDetail {
   if (!isRecord(value)) return false;
   const messages = value.messages;
+  const mediaResults = value.mediaResults;
   return (
     isConversation(value) &&
     Array.isArray(messages) &&
@@ -110,7 +117,9 @@ function isConversationDetail(value: unknown): value is ConversationDetail {
         typeof message.id === "string" &&
         (message.role === "user" || message.role === "assistant") &&
         typeof message.text === "string",
-    )
+    ) &&
+    Array.isArray(mediaResults) &&
+    mediaResults.every((entry) => isRecord(entry) && typeof entry.id === "string" && typeof entry.turnId === "string" && isMediaResult(entry.result))
   );
 }
 
@@ -167,6 +176,35 @@ const turnPresentation = {
   interrupted: { label: "Interrupted", variant: "warning" },
   failure: { label: "Failed", variant: "destructive" },
 } satisfies Record<TurnStatus, { label: string; variant: "default" | "secondary" | "warning" | "destructive" }>;
+
+function mediaResultLabel(result: MediaResult): string {
+  if (result.kind === "lookup") return `${result.choices.length} title choice${result.choices.length === 1 ? "" : "s"}`;
+  if (result.kind === "discovery") return `${result.type === "movie" ? "Movie" : "Series"} defaults validated`;
+  if (result.kind === "status") return `${result.type === "movie" ? "Movie" : "Series"} status`;
+  if (result.kind === "skill") return `${result.service} skill loaded`;
+  return `Media ${result.operation} failed`;
+}
+
+function MediaResultCard({ entry }: { entry: SavedMediaResult }) {
+  const result = entry.result;
+  return (
+    <article className="assistant-media-result" aria-label={mediaResultLabel(result)}>
+      <div className="assistant-media-result__heading">
+        <strong>{mediaResultLabel(result)}</strong>
+        {result.kind !== "skill" && <Badge variant={result.kind === "error" ? "destructive" : "secondary"}>{result.kind === "error" ? "Unavailable" : "Read-only evidence"}</Badge>}
+      </div>
+      {result.kind === "lookup" && (
+        result.choices.length > 0
+          ? <ul>{result.choices.map((choice) => <li key={`${choice.type}-${choice.externalId}`}>{choice.title}{choice.year ? ` (${choice.year})` : ""} · {choice.type} · ID {choice.externalId}</li>)}</ul>
+          : <p>No matching titles were returned.</p>
+      )}
+      {result.kind === "discovery" && <p>Folder: {result.rootFolder}. Quality profile: {result.qualityProfileId}{result.quality ? ` (${result.quality})` : ""}.</p>}
+      {result.kind === "status" && <dl><dt>Tracked</dt><dd>{result.tracked === null ? "Unknown" : result.tracked ? "Yes" : "No"}</dd><dt>Active download</dt><dd>{result.activeDownload === null ? "Unknown" : result.activeDownload ? "Yes" : "No"}</dd><dt>Available media</dt><dd>{result.available === null ? "Unknown" : result.available ? "Yes" : "No"}</dd></dl>}
+      {result.kind === "error" && <p>{result.message}</p>}
+      {result.kind === "skill" && <p>Instructions were loaded for the read-only lookup.</p>}
+    </article>
+  );
+}
 
 function replaceConversation(conversations: Conversation[], next: Conversation): Conversation[] {
   const existing = conversations.findIndex((conversation) => conversation.id === next.id);
@@ -562,7 +600,7 @@ export function Assistant() {
               <EmptyMedia variant="icon"><Bot aria-hidden="true" /></EmptyMedia>
               <EmptyHeader>
                 <EmptyTitle>Start a conversation</EmptyTitle>
-                <EmptyDescription>This Assistant can chat, but cannot execute Server or media actions yet.</EmptyDescription>
+                <EmptyDescription>This Assistant can identify media and report read-only service status.</EmptyDescription>
               </EmptyHeader>
               <Button type="button" onClick={createConversation} disabled={isCreating}>
                 <MessageSquarePlus data-icon="inline-start" aria-hidden="true" />
@@ -580,7 +618,7 @@ export function Assistant() {
               <EmptyMedia variant="icon"><Bot aria-hidden="true" /></EmptyMedia>
               <EmptyHeader>
                 <EmptyTitle>How can I help?</EmptyTitle>
-                <EmptyDescription>This Assistant can chat, but cannot execute Server or media actions yet.</EmptyDescription>
+                <EmptyDescription>This Assistant can identify media and report read-only service status.</EmptyDescription>
               </EmptyHeader>
             </Empty>
           )}
@@ -617,6 +655,11 @@ export function Assistant() {
               </MessageScroller>
             </MessageScrollerProvider>
           )}
+          {activeConversation && activeConversation.mediaResults.length > 0 && (
+            <section className="assistant-media-results" aria-label="Media evidence">
+              {activeConversation.mediaResults.map((entry) => <MediaResultCard key={entry.id} entry={entry} />)}
+            </section>
+          )}
           {activeConversation?.turn?.status === "failure" && (
             <Alert variant="destructive">
               <CircleAlert aria-hidden="true" />
@@ -650,7 +693,7 @@ export function Assistant() {
             </Field>
           </FieldGroup>
           <div className="assistant-composer__actions">
-            <p aria-live="polite">{isRunning ? "The Assistant is working. New messages are unavailable." : "This Assistant cannot execute Server or media actions yet."}</p>
+            <p aria-live="polite">{isRunning ? "The Assistant is working. New messages are unavailable." : "Read-only media lookup and status only. No changes are made to your services."}</p>
             <Button type="submit" disabled={composerDisabled || !text.trim()}>
               <SendHorizontal data-icon="inline-start" aria-hidden="true" />
               Send

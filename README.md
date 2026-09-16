@@ -1,6 +1,6 @@
 # Voidstation
 
-A private Dashboard for Server CPU, RAM, Disk space, and Uptime, plus a saved-chat Assistant backed by an isolated Pi worker. One local owner account protects both pages. The Assistant is tool-free in this release and cannot execute Server or media actions. Dashboard access does not require a model provider.
+A private Dashboard for Server CPU, RAM, Disk space, and Uptime, plus a saved-chat Assistant backed by an isolated Pi worker. One local owner account protects both pages. The Assistant can perform read-only Radarr/Sonarr media lookup and status checks; it cannot execute Server actions or media mutations. Dashboard access does not require a model provider.
 
 ## Local development
 

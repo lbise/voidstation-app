@@ -1,3 +1,6 @@
+import type { SavedMediaResult } from "./media-contract.ts";
+export type { SavedMediaResult } from "./media-contract.ts";
+
 export type TurnStatus = "running" | "complete" | "interrupted" | "failure";
 
 export interface Turn {
@@ -24,6 +27,7 @@ export interface Message {
 
 export interface ConversationDetail extends Conversation {
   messages: Message[];
+  mediaResults: SavedMediaResult[];
 }
 
 export interface ErrorResponse {

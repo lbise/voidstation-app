@@ -1,12 +1,25 @@
 // Local browser verification only. Uses temporary owner credentials and Pi model fixtures.
 import { mkdir, writeFile } from "node:fs/promises";
 import { assistantServer } from "./assistant-server.ts";
+import { fakeMedia } from "./fake-media.ts";
 
 const server = await assistantServer();
+const media = await fakeMedia();
 try {
-  await server.fixture([{ text: "This conversation is saved. You can resume it on another device.", delayMs: 1500 }]);
-  await server.startWorker();
+  const config = await media.config();
+  media.setTracked("radarr", [{ id: 12, tmdbId: 438631, hasFile: true }]);
+  media.setQueue("radarr", [{ id: 1, movie: { id: 12 }, status: "downloading" }]);
+  await server.fixture([
+    { toolCalls: [{ name: "read_skill", arguments: { service: "radarr", resource: "SKILL.md" } }] },
+    { toolCalls: [{ name: "media_lookup", arguments: { type: "movie", query: "Dune" } }] },
+    { toolCalls: [{ name: "media_status", arguments: { type: "movie", externalId: 438631 } }] },
+    { text: "Dune is tracked, downloading, and available.", delayMs: 500 },
+    { toolCalls: [{ name: "media_discover", arguments: { type: "movie", quality: "Not configured" } }] },
+    { text: "I could not validate that media configuration.", delayMs: 500 },
+  ]);
+  await server.startWorker({ VOIDSTATION_MEDIA_CONFIG_FILE: config });
 } catch (error) {
+  await media.close();
   await server.close();
   throw error;
 }
@@ -19,6 +32,8 @@ let closing = false;
 async function close() {
   if (closing) return;
   closing = true;
+  await server.stopWorker();
+  await media.close();
   await server.close();
   process.exit(0);
 }

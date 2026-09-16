@@ -802,6 +802,53 @@ button,
   gap: var(--space-md);
 }
 
+.assistant-media-results {
+  display: grid;
+  gap: var(--space-sm);
+  width: min(54rem, 100%);
+  margin: 0 auto;
+}
+
+.assistant-media-result {
+  display: grid;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+  border: var(--rule) solid var(--color-rule);
+  background: var(--color-surface);
+}
+
+.assistant-media-result__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.assistant-media-result p,
+.assistant-media-result ul,
+.assistant-media-result dl {
+  margin: 0;
+  color: var(--color-ink-muted);
+  font-size: var(--text-sm);
+}
+
+.assistant-media-result ul {
+  display: grid;
+  gap: var(--space-2xs);
+  padding-inline-start: 1.25rem;
+}
+
+.assistant-media-result dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-2xs) var(--space-md);
+}
+
+.assistant-media-result dt {
+  color: var(--color-ink);
+  font-weight: 700;
+}
+
 .assistant-message-scroller {
   flex: 1;
   min-height: 18rem;

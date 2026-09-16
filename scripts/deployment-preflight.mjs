@@ -28,6 +28,12 @@ const containerPaths = {
   workerToken: "/run/voidstation-worker/token",
   conversationDirectory: "/var/lib/voidstation/conversations",
   credentialDirectory: "/var/lib/voidstation/credentials",
+  mediaDirectory: "/run/voidstation-media",
+  mediaConfig: "/run/voidstation-media/config.json",
+  mediaKeys: {
+    radarr: "/run/voidstation-media/radarr.key",
+    sonarr: "/run/voidstation-media/sonarr.key",
+  },
 };
 
 function fail(message) {
@@ -536,6 +542,7 @@ function validateWorkerConfiguration(service, dashboardTokenSource) {
     VOIDSTATION_WORKER_TOKEN_FILE: containerPaths.workerToken,
     VOIDSTATION_CONVERSATION_DIR: containerPaths.conversationDirectory,
     VOIDSTATION_CREDENTIAL_DIR: containerPaths.credentialDirectory,
+    VOIDSTATION_MEDIA_CONFIG_FILE: containerPaths.mediaConfig,
   };
   for (const [name, expected] of Object.entries(required))
     if (String(environment[name] ?? "") !== expected)
@@ -548,9 +555,9 @@ function validateWorkerConfiguration(service, dashboardTokenSource) {
   )
     fail("assistant-worker must not publish a host port.");
   const volumes = requireArray(service.volumes, "assistant-worker.volumes");
-  if (volumes.length !== 3)
+  if (volumes.length !== 4)
     fail(
-      "assistant-worker must mount only its token, conversations, and credentials.",
+      "assistant-worker must mount only its token, conversations, credentials, and media configuration.",
     );
   const byTarget = new Map(volumes.map((volume) => [volume?.target, volume]));
   if (byTarget.size !== volumes.length)
@@ -575,6 +582,16 @@ function validateWorkerConfiguration(service, dashboardTokenSource) {
         `The assistant-worker bind mount for ${target} must be writable and must not create its host path.`,
       );
   }
+  const media = byTarget.get(containerPaths.mediaDirectory);
+  if (
+    media?.type !== "bind" ||
+    typeof media.source !== "string" ||
+    media.read_only !== true ||
+    media.bind?.create_host_path !== false
+  )
+    fail(
+      "The assistant-worker media configuration mount must be read-only and must not create its host path.",
+    );
   const conversations = byTarget.get(
     containerPaths.conversationDirectory,
   ).source;
@@ -583,7 +600,12 @@ function validateWorkerConfiguration(service, dashboardTokenSource) {
     fail(
       "assistant-worker conversation and credential storage must use separate host directories.",
     );
-  return { token: dashboardTokenSource, conversations, credentials };
+  return {
+    token: dashboardTokenSource,
+    conversations,
+    credentials,
+    media: media.source,
+  };
 }
 function checkedPath(source, description, directory) {
   if (
@@ -701,6 +723,133 @@ function validateWorkerState(worker) {
     if (stat.uid !== 1000 || stat.gid !== 1000 || (stat.mode & 0o777) !== 0o700)
       fail(`${description} must be owned by UID/GID 1000 with mode 0700.`);
   }
+  validateMediaConfiguration(worker.media);
+}
+function validateMediaEndpoint(value, service) {
+  if (typeof value !== "string" || !value.trim() || value !== value.trim())
+    fail(`Media ${service} endpoint must be a non-empty URL.`);
+  let endpoint;
+  try {
+    endpoint = new URL(value);
+  } catch {
+    fail(`Media ${service} endpoint must be an HTTP or HTTPS URL.`);
+  }
+  if (
+    !["http:", "https:"].includes(endpoint.protocol) ||
+    endpoint.username ||
+    endpoint.password ||
+    endpoint.search ||
+    endpoint.hash
+  )
+    fail(`Media ${service} endpoint must not contain credentials or URL parameters.`);
+}
+function validateMediaConfiguration(source) {
+  const directory = checkedPath(source, "Media configuration directory", true);
+  requireAccess(
+    source,
+    "Media configuration directory",
+    fs.constants.R_OK | fs.constants.X_OK,
+  );
+  if (
+    directory.uid !== 1000 ||
+    directory.gid !== 1000 ||
+    (directory.mode & 0o777) !== 0o700
+  )
+    fail(
+      "Media configuration directory must be owned by UID/GID 1000 with mode 0700.",
+    );
+  const configPath = path.join(source, "config.json");
+  const configStat = checkedPath(configPath, "Media configuration file", false);
+  requireAccess(configPath, "Media configuration file", fs.constants.R_OK);
+  if (
+    configStat.uid !== 1000 ||
+    configStat.gid !== 1000 ||
+    (configStat.mode & 0o777) !== 0o600
+  )
+    fail(
+      "Media configuration file must be owned by UID/GID 1000 with mode 0600.",
+    );
+  let config;
+  try {
+    config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  } catch {
+    fail("Media configuration file must contain JSON.");
+  }
+  const services = ["radarr", "sonarr"];
+  if (
+    !config ||
+    typeof config !== "object" ||
+    Array.isArray(config) ||
+    JSON.stringify(Object.keys(config).sort()) !== JSON.stringify(services)
+  )
+    fail("Media configuration must contain only radarr and sonarr.");
+  const expectedFiles = new Set(["config.json"]);
+  for (const service of services) {
+    const settings = config[service];
+    const required = [
+      "endpoint",
+      "keyFile",
+      "rootFolder",
+      "defaultQualityProfileId",
+      "qualityMappings",
+    ];
+    if (
+      !settings ||
+      typeof settings !== "object" ||
+      Array.isArray(settings) ||
+      JSON.stringify(Object.keys(settings).sort()) !==
+        JSON.stringify(required.sort())
+    )
+      fail(`Media ${service} configuration has an invalid shape.`);
+    validateMediaEndpoint(settings.endpoint, service);
+    if (settings.keyFile !== containerPaths.mediaKeys[service])
+      fail(`Media ${service} keyFile must use its selected worker-only key path.`);
+    const keyName = path.basename(settings.keyFile);
+    const keyPath = path.join(source, keyName);
+    expectedFiles.add(keyName);
+    const key = checkedPath(keyPath, `Media ${service} key file`, false);
+    requireAccess(keyPath, `Media ${service} key file`, fs.constants.R_OK);
+    if (
+      key.uid !== 1000 ||
+      key.gid !== 1000 ||
+      (key.mode & 0o777) !== 0o600 ||
+      fs.readFileSync(keyPath, "utf8").trim().length === 0
+    )
+      fail(
+        `Media ${service} key file must be non-empty, owned by UID/GID 1000, and mode 0600.`,
+      );
+    if (
+      typeof settings.rootFolder !== "string" ||
+      !path.isAbsolute(settings.rootFolder) ||
+      settings.rootFolder !== path.resolve(settings.rootFolder)
+    )
+      fail(`Media ${service} rootFolder must be a normalized absolute path.`);
+    if (
+      !Number.isSafeInteger(settings.defaultQualityProfileId) ||
+      settings.defaultQualityProfileId <= 0
+    )
+      fail(`Media ${service} defaultQualityProfileId must be a positive integer.`);
+    if (
+      !settings.qualityMappings ||
+      typeof settings.qualityMappings !== "object" ||
+      Array.isArray(settings.qualityMappings) ||
+      Object.keys(settings.qualityMappings).length === 0 ||
+      Object.entries(settings.qualityMappings).some(
+        ([name, id]) =>
+          !name.trim() || !Number.isSafeInteger(id) || id <= 0,
+      )
+    )
+      fail(`Media ${service} qualityMappings must map non-empty names to positive profile IDs.`);
+  }
+  const entries = fs.readdirSync(source).sort();
+  if (
+    entries.length !== expectedFiles.size ||
+    entries.some((entry) => !expectedFiles.has(entry))
+  )
+    fail(
+      "Media configuration directory must contain only config.json and the selected service key files.",
+    );
+  return { directory: source, config: configPath };
 }
 function pathsOverlap(first, second) {
   const relative = path.relative(first, second);
@@ -715,6 +864,7 @@ function validateSeparateStatePaths(probes, worker) {
     ["auth data", probes.auth],
     ["conversation state", worker.conversations],
     ["worker credential state", worker.credentials],
+    ["media configuration", worker.media],
     ["Tailscale TLS", probes.tls],
     ["LAN TLS", probes.lanTls],
   ];
@@ -911,6 +1061,10 @@ function validateRuntimeAccess(probes, worker) {
       worker.credentials,
       fs.constants.R_OK | fs.constants.W_OK | fs.constants.X_OK,
     ],
+    [worker.media, fs.constants.R_OK | fs.constants.X_OK],
+    [path.join(worker.media, "config.json"), fs.constants.R_OK],
+    [path.join(worker.media, "radarr.key"), fs.constants.R_OK],
+    [path.join(worker.media, "sonarr.key"), fs.constants.R_OK],
   ];
   runAsRoot(
     "setpriv",
@@ -1441,6 +1595,7 @@ function validateWorkerInspection(container, worker) {
     VOIDSTATION_WORKER_TOKEN_FILE: containerPaths.workerToken,
     VOIDSTATION_CONVERSATION_DIR: containerPaths.conversationDirectory,
     VOIDSTATION_CREDENTIAL_DIR: containerPaths.credentialDirectory,
+    VOIDSTATION_MEDIA_CONFIG_FILE: containerPaths.mediaConfig,
   };
   const environment = environmentFromInspection(container);
   for (const [name, value] of Object.entries(expectedEnvironment))
@@ -1468,6 +1623,7 @@ function validateWorkerInspection(container, worker) {
     [containerPaths.workerToken, [worker.token, false]],
     [containerPaths.conversationDirectory, [worker.conversations, true]],
     [containerPaths.credentialDirectory, [worker.credentials, true]],
+    [containerPaths.mediaDirectory, [worker.media, false]],
   ]);
   const mounts = requireArray(container.Mounts, "Assistant-worker mounts");
   if (mounts.length !== expected.size)

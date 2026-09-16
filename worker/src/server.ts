@@ -7,8 +7,10 @@ import { DatabaseSync } from "node:sqlite";
 import { createAgentSession, SessionManager, type AgentSession, type ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
 import type { Conversation, ConversationDetail, ErrorResponse, Message, Turn } from "./contract.ts";
-import { EmptyResourceLoader, codexModel, createCodexRuntime, emptySettings, installSanitizedProvider, providerFailure, type ProviderFailureKind } from "./pi.ts";
+import { RestrictedResourceLoader, codexModel, createCodexRuntime, emptySettings, installSanitizedProvider, providerFailure, type ProviderFailureKind } from "./pi.ts";
 import { ConversationStore } from "./store.ts";
+import { createMediaTools } from "./media.ts";
+import type { MediaResult } from "./media-contract.ts";
 
 const MAX_BODY_BYTES = 20_000;
 const MAX_TEXT_LENGTH = 8_000;
@@ -195,9 +197,11 @@ class Worker {
         modelRuntime: this.runtime,
         model: this.model,
         thinkingLevel: "medium",
-        noTools: "all",
-        tools: [],
-        resourceLoader: new EmptyResourceLoader(),
+        noTools: "builtin",
+        customTools: createMediaTools((result: MediaResult) => {
+          if (result.kind !== "skill") this.store.saveMediaResult(task.conversationId, task.turnId, result);
+        }),
+        resourceLoader: new RestrictedResourceLoader(),
         settingsManager: emptySettings(),
         sessionManager,
       });
@@ -271,8 +275,10 @@ function parseConfig(): Config {
   const tokenFile = process.env.VOIDSTATION_WORKER_TOKEN_FILE;
   const conversationDir = process.env.VOIDSTATION_CONVERSATION_DIR;
   const credentialDir = process.env.VOIDSTATION_CREDENTIAL_DIR;
-  if (!tokenFile || !conversationDir || !credentialDir || !isAbsolute(tokenFile) || !isAbsolute(conversationDir) || !isAbsolute(credentialDir)) {
-    throw new Error("Worker state and token paths must be absolute and configured.");
+  const mediaConfigFile = process.env.VOIDSTATION_MEDIA_CONFIG_FILE;
+  if (!tokenFile || !conversationDir || !credentialDir || !mediaConfigFile ||
+      !isAbsolute(tokenFile) || !isAbsolute(conversationDir) || !isAbsolute(credentialDir) || !isAbsolute(mediaConfigFile)) {
+    throw new Error("Worker state, token, and media configuration paths must be absolute and configured.");
   }
   const rawToken = readFileSync(tokenFile, "utf8");
   const token = rawToken.trim();

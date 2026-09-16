@@ -2,7 +2,8 @@ import { DatabaseSync } from "node:sqlite";
 import { chmodSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Conversation, ConversationDetail, Message, Turn, TurnStatus } from "./contract.ts";
+import type { Conversation, ConversationDetail, Message, Turn, TurnStatus, SavedMediaResult } from "./contract.ts";
+import type { MediaResult } from "./media-contract.ts";
 
 interface ConversationRow { id: string; title: string; created_at: string; updated_at: string; transcript_path: string; }
 interface TurnRow { id: string; conversation_id: string; status: TurnStatus; error: string | null; started_at: string; finished_at: string | null; }
@@ -46,6 +47,11 @@ export class ConversationStore {
         id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
         turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL, role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
         text TEXT NOT NULL, position INTEGER NOT NULL, created_at TEXT NOT NULL, UNIQUE(conversation_id, position)
+      );
+      CREATE TABLE IF NOT EXISTS media_results (
+        position INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE, result TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS deletions (
         conversation_id TEXT PRIMARY KEY, transcript_path TEXT NOT NULL, trash_path TEXT NOT NULL
@@ -98,7 +104,16 @@ export class ConversationStore {
     if (!conversation) return undefined;
     const messages = this.database.prepare("SELECT id, role, text FROM messages WHERE conversation_id = ? ORDER BY position ASC")
       .all(id) as unknown as Message[];
-    return { ...conversation, messages };
+    const results = this.database.prepare("SELECT id, turn_id, result FROM media_results WHERE conversation_id = ? ORDER BY position ASC")
+      .all(id) as unknown as { id: string; turn_id: string; result: string }[];
+    const mediaResults: SavedMediaResult[] = results.map((row) => ({ id: row.id, turnId: row.turn_id, result: JSON.parse(row.result) as MediaResult }));
+    return { ...conversation, messages, mediaResults };
+  }
+
+  saveMediaResult(conversationId: string, turnId: string, result: MediaResult): void {
+    // Called only by the restricted executor, never inferred from Assistant prose.
+    this.database.prepare("INSERT INTO media_results (id, conversation_id, turn_id, result) VALUES (?, ?, ?, ?)")
+      .run(randomUUID(), conversationId, turnId, JSON.stringify(result));
   }
 
   getTranscriptPath(id: string): string | undefined {
