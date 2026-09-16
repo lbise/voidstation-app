@@ -53,7 +53,7 @@ sudo chown 1000:1000 /var/lib/voidstation/worker-token
 sudo chmod 0600 /var/lib/voidstation/worker-token
 ```
 
-The worker token is a file with at least 32 non-whitespace characters, not an environment value. Do not put it in logs, shell arguments, or browser responses. Conversation transcripts and private provider refresh state stay in separate worker-owned directories, distinct from Dashboard authentication. Complete the worker's [independent device-code login](../worker/README.md#codex-login) from an owner-controlled terminal. Never copy the Server's development Pi or Codex credentials.
+The worker token is a file with at least 32 non-whitespace characters, not an environment value. Do not put it in logs, shell arguments, or browser responses. Conversation transcripts and private provider refresh state stay in separate worker-owned directories, distinct from Dashboard authentication. Complete the worker's [independent device-code login](../worker/README.md#codex-login) from an owner-controlled terminal. To enable OpenRouter, install its API key as `/var/lib/voidstation/worker-credentials/openrouter-api-key` with owner UID/GID 1000 and mode `0600`, then restart the worker. Never copy the Server's development Pi or Codex credentials.
 
 ### Media service configuration
 

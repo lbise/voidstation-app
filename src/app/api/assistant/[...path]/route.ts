@@ -8,4 +8,4 @@ async function handle(request: NextRequest, context: { params: Promise<{ path: s
   return assistantRequest(request, (await context.params).path);
 }
 
-export { handle as GET, handle as POST, handle as DELETE };
+export { handle as GET, handle as POST, handle as PUT, handle as DELETE };

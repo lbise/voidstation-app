@@ -51,13 +51,15 @@ Use the same procedure to renew an expired login. The restart clears the authent
 
 Open the printed URL in a browser, enter the printed code, and leave the terminal open until it finishes. The command does not print a bearer token. Pi writes refreshable OAuth state to `auth.json` in `VOIDSTATION_CREDENTIAL_DIR`; never copy a development Pi auth store into this directory.
 
-The worker uses only the `openai-codex` provider and the pinned `gpt-5.5` model. It rejects an OpenAI API-key environment fallback and non-OAuth Codex credentials. It does not use another account, another provider, or paid API billing. Authentication failure blocks new turns until the operator completes `npm run login` and restarts the worker. Limits and provider outages block new turns for the configured cooldown. Both cases return a sanitized `503` error while saved history remains readable. A separate login store can still consume the same account-level subscription limits as development Pi. Recheck Codex compatibility when upgrading Pi.
+The worker supports the `openai-codex` provider with the pinned `gpt-5.5` model and OpenRouter with the models included in the pinned Pi catalog. To use OpenRouter, write its API key to `openrouter-api-key` in the worker credential directory with mode `0600`, then restart the worker. The worker imports that key into its private Pi credential store. OpenRouter offers both free and paid models, but free models can still have rate limits. OpenRouter usage may incur separate API billing. The worker rejects an OpenAI API-key environment fallback and non-OAuth Codex credentials. Provider credentials stay in the worker and never reach the Dashboard. Authentication failure blocks new turns for the selected provider until its credentials are configured. Limits and provider outages block that provider for the configured cooldown. Both cases return a sanitized `503` error while saved history remains readable. A separate login store can still consume the same account-level subscription limits as development Pi. Recheck provider compatibility when upgrading Pi.
 
 ## HTTP contract
 
 All routes require worker-token authentication.
 
 - `GET /health`
+- `GET /settings` returns the selected provider/model, connection status, and the supported model catalog
+- `PUT /settings` with `{ "provider": "openrouter", "model": "provider/model-id" }` changes the selection for new turns
 - `GET /conversations` returns `{ "conversations": Conversation[] }`
 - `POST /conversations` with `{}` returns `201 Conversation`
 - `GET /conversations/:id` returns `ConversationDetail`

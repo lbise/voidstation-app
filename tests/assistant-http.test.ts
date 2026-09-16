@@ -8,6 +8,7 @@ let server: AssistantServer;
 let laptop: string;
 let phone: string;
 const conversations = "/api/assistant/conversations";
+const settings = "/api/assistant/settings";
 
 type Detail = { id: string; title: string; messages: { id: string; role: string; text: string }[];
   turn: null | { id: string; status: string; error: string | null } };
@@ -65,7 +66,7 @@ afterAll(async () => { await server?.close(); });
 
 it("keeps Assistant endpoints private and preserves Dashboard access when the worker is unavailable", async () => {
   expect((await server.request("/assistant")).status).toBe(307);
-  for (const path of [conversations, `${conversations}/some-id`, `${conversations}/some-id/events`]) {
+  for (const path of [conversations, `${conversations}/some-id`, `${conversations}/some-id/events`, settings]) {
     expect((await server.request(path)).status).toBe(401);
   }
   expect((await server.mutate(conversations, "POST", {}, "")).status).toBe(401);
@@ -73,6 +74,38 @@ it("keeps Assistant endpoints private and preserves Dashboard access when the wo
   expect((await server.request(conversations, {}, laptop)).status).toBe(503);
   expect((await server.request("/", {}, laptop)).status).toBe(200);
   expect((await server.request("/api/metrics", {}, phone)).status).toBe(200);
+});
+
+it("lists both providers with free and paid OpenRouter models and persists the selection", async () => {
+  await server.startWorker();
+  const initial = await server.request(settings, {}, laptop);
+  expect(initial.status).toBe(200);
+  const payload = await initial.json() as { provider: string; model: string; providers: { id: string; models: { id: string; free: boolean }[] }[] };
+  const openrouter = payload.providers.find((provider) => provider.id === "openrouter");
+  expect(openrouter?.models.length).toBeGreaterThan(1);
+  expect(openrouter?.models.some((model) => model.free)).toBe(true);
+  expect(openrouter?.models.some((model) => !model.free)).toBe(true);
+  const selectedModel = openrouter!.models.find((model) => model.free)!.id;
+  const changed = await server.mutate(settings, "PUT", { provider: "openrouter", model: selectedModel }, laptop);
+  expect(changed.status).toBe(200);
+  expect(await changed.json()).toMatchObject({ provider: "openrouter", model: selectedModel });
+  expect((await server.request(settings, {}, phone)).status).toBe(200);
+  expect(await (await server.request(settings, {}, phone)).json()).toMatchObject({ provider: "openrouter", model: selectedModel });
+  await server.stopWorker();
+  await server.startWorker();
+  expect(await (await server.request(settings, {}, laptop)).json()).toMatchObject({ provider: "openrouter", model: selectedModel });
+  const active = await create();
+  await server.fixture([{ text: "The selected OpenRouter model stayed pinned.", delayMs: 250 }]);
+  expect((await server.mutate(`${conversations}/${active.id}/turns`, "POST", { text: "Use the selected provider" }, laptop)).status).toBe(202);
+  expect((await server.mutate(settings, "PUT", { provider: "openai-codex", model: "gpt-5.5" }, laptop)).status).toBe(200);
+  const activeResult = await settled(active.id);
+  expect(activeResult.turn).toMatchObject({ provider: "openrouter", model: selectedModel });
+  expect(activeResult.messages.at(-1)).toMatchObject({ provider: "openrouter", model: selectedModel });
+  const restored = await server.request(settings, {}, laptop);
+  const restoredSettings = await restored.json() as { provider: string; model: string; lastModels: { openrouter: string } };
+  expect(restoredSettings).toMatchObject({ provider: "openai-codex", model: "gpt-5.5" });
+  expect(restoredSettings.lastModels.openrouter).toBe(selectedModel);
+  await server.stopWorker();
 });
 
 it("shares Assistant history between Tailscale and LAN HTTPS sessions", async () => {
@@ -94,7 +127,8 @@ it("shares Assistant history between Tailscale and LAN HTTPS sessions", async ()
   expect(accepted.status).toBe(202);
   const turn = await accepted.json();
   const detail = await settled(first.id);
-  expect(detail.turn).toMatchObject({ id: turn.id, status: "complete", error: null });
+  expect(detail.turn).toMatchObject({ id: turn.id, status: "complete", error: null, provider: "openai-codex", model: "gpt-5.5" });
+  expect(detail.messages.at(-1)).toMatchObject({ role: "assistant", provider: "openai-codex", model: "gpt-5.5" });
   expect(detail.messages.map(({ role, text }) => ({ role, text }))).toEqual([
     { role: "user", text: "Remember this conversation" }, { role: "assistant", text: "A saved reply." },
   ]);
@@ -205,11 +239,14 @@ it("protects every history, stream, and mutation route and rejects browser-contr
     expect((await server.mutate(`${item}/turns`, "POST", body, laptop)).status).toBe(400);
   }
   expect((await history(conversation.id)).messages).toEqual([]);
-  for (const path of ["/health", "/conversations", `/conversations/${conversation.id}/events`]) {
+  for (const path of ["/health", "/settings", "/conversations", `/conversations/${conversation.id}/events`]) {
     expect((await server.internal(path)).status).toBe(401);
     expect((await server.internal(path, { authorization: "Bearer forged" })).status).toBe(401);
   }
   expect((await server.internal("/health", { authorization: `Bearer ${server.token}` })).status).toBe(200);
+  for (const body of [{ provider: "openrouter" }, { provider: "openrouter", model: "" }, { provider: "unknown", model: "model" }, { provider: "openrouter", model: "not-a-model", extra: true }]) {
+    expect((await server.mutate(settings, "PUT", body, laptop)).status).toBe(400);
+  }
   expect((await server.internal("/health", { authorization: `Bearer ${server.token}`, origin: server.origin })).status).toBe(401);
   expect((await server.internal("/health", { authorization: `Bearer ${server.token}`, "sec-fetch-site": "cross-site" })).status).toBe(401);
   expect(server.output).not.toContain(server.token);

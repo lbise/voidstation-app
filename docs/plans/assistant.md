@@ -1,5 +1,7 @@
 # Assistant planning
 
+A later owner decision adds provider/model selection to the Assistant. That decision supersedes the initial Codex-only and no-settings release boundary where it conflicts below. The selector supports OpenAI Codex and OpenRouter, including free and paid OpenRouter models. Provider credentials remain worker-owned.
+
 This records the agreed design discussion. The implementation specification is published as [GitHub issue #6](https://github.com/lbise/voidstation-app/issues/6), labeled `ready-for-agent`. Use that issue as the authoritative specification. No application implementation or deployment was performed during this planning session.
 
 ## Agreed direction

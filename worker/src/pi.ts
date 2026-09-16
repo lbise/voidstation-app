@@ -26,11 +26,11 @@ const EMPTY_EXTENSIONS: LoadExtensionsResult = {
 
 export type ProviderFailureKind = "authentication" | "limits" | "unavailable" | "unknown";
 
-export function providerFailure(error: unknown): { kind: ProviderFailureKind; message: string } {
+export function providerFailure(error: unknown, providerId?: string): { kind: ProviderFailureKind; message: string } {
   const source = error instanceof Error ? error.message : String(error);
   const message = source.toLowerCase();
   if (/(auth|login|oauth|credential|token|401|403)/.test(message)) {
-    return { kind: "authentication", message: "Provider authentication is unavailable. Run worker login." };
+    return { kind: "authentication", message: providerId === "openrouter" ? "OpenRouter authentication is unavailable. Check the worker credential file." : "Provider authentication is unavailable. Run worker login." };
   }
   if (/(limit|quota|rate.?limit|429|usage)/.test(message)) {
     return { kind: "limits", message: "Provider limits are currently exhausted." };
@@ -50,7 +50,7 @@ function failureMessage(model: Model<any>, error: unknown): AssistantMessage {
     model: model.id,
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
     stopReason: "error",
-    errorMessage: providerFailure(error).message,
+    errorMessage: providerFailure(error, model.provider).message,
     timestamp: Date.now(),
   };
 }
@@ -71,7 +71,7 @@ function sanitizeStream(model: Model<any>, source: AssistantMessageEventStream):
     try {
       for await (const event of source) {
         if (event.type === "error") {
-          output.push({ ...event, error: { ...event.error, errorMessage: providerFailure(event.error.errorMessage ?? "provider failure").message } });
+          output.push({ ...event, error: { ...event.error, errorMessage: providerFailure(event.error.errorMessage ?? "provider failure", model.provider).message } });
         } else {
           output.push(event);
         }

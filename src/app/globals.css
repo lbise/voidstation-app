@@ -786,6 +786,89 @@ button,
   background: var(--color-paper);
 }
 
+.assistant-page-head__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.assistant-settings {
+  display: grid;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  border-bottom: var(--rule-width) solid var(--color-rule);
+  background: var(--color-surface);
+}
+
+.assistant-settings__heading,
+.assistant-settings__actions {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
+
+.assistant-settings h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  letter-spacing: -0.04em;
+}
+
+.assistant-settings__heading > p,
+.assistant-settings__actions p,
+.assistant-settings__hint {
+  margin: 0;
+  color: var(--color-ink-muted);
+  font-size: var(--text-xs);
+}
+
+.assistant-settings__form {
+  display: grid;
+  gap: var(--space-md);
+  width: min(54rem, 100%);
+  margin: 0 auto;
+}
+
+.assistant-settings__form select,
+.assistant-settings__form input {
+  width: 100%;
+  min-height: 2.25rem;
+  padding: var(--space-xs) var(--space-sm);
+  border: var(--rule-width) solid var(--color-rule-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-raised);
+  color: var(--color-ink);
+  font: inherit;
+}
+
+.assistant-settings__form select[size] {
+  height: auto;
+  padding: 0;
+}
+
+.assistant-settings__form select[size] option {
+  padding: var(--space-xs) var(--space-sm);
+}
+
+.assistant-settings__filters {
+  display: flex;
+  gap: var(--space-2xs);
+  margin-block: var(--space-2xs);
+}
+
+.assistant-settings__actions {
+  align-items: center;
+}
+
+.assistant-message-model {
+  margin-inline-start: var(--space-xs);
+  color: var(--color-ink-muted);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 400;
+}
+
 .assistant-thread {
   display: flex;
   flex: 1;
@@ -917,6 +1000,7 @@ button,
 @media (min-width: 48rem) {
   .assistant-conversation-list,
   .assistant-page-head,
+  .assistant-settings,
   .assistant-thread,
   .assistant-composer {
     padding-inline: var(--space-xl);
@@ -924,6 +1008,19 @@ button,
 
   .assistant-page-head {
     min-height: 7.5rem;
+  }
+}
+
+@media (max-width: 47.999rem) {
+  .assistant-page-head__actions {
+    align-items: flex-end;
+    flex-direction: column;
+  }
+
+  .assistant-settings__heading,
+  .assistant-settings__actions {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 

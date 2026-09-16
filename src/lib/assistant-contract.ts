@@ -7,6 +7,8 @@ export type Turn = {
   id: string;
   status: TurnStatus;
   error: string | null;
+  provider: string;
+  model: string;
   startedAt: string;
   finishedAt: string | null;
 };
@@ -15,6 +17,8 @@ export type Message = {
   id: string;
   role: "user" | "assistant";
   text: string;
+  provider?: string;
+  model?: string;
 };
 
 export type Conversation = {
@@ -32,4 +36,29 @@ export type ConversationDetail = Conversation & {
 
 export type ErrorResponse = {
   error: string;
+};
+
+export type AssistantProviderId = "openai-codex" | "openrouter";
+
+export type AssistantModelOption = {
+  id: string;
+  name: string;
+  free: boolean;
+  inputCost: number;
+  outputCost: number;
+  contextWindow: number;
+};
+
+export type AssistantProviderOption = {
+  id: AssistantProviderId;
+  name: string;
+  configured: boolean;
+  models: AssistantModelOption[];
+};
+
+export type AssistantSettings = {
+  provider: AssistantProviderId;
+  model: string;
+  lastModels: Record<AssistantProviderId, string>;
+  providers: AssistantProviderOption[];
 };

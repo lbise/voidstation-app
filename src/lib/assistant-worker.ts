@@ -43,24 +43,55 @@ async function submission(request: NextRequest, turn: boolean) {
   } catch { return null; }
 }
 
+async function settingsSubmission(request: NextRequest): Promise<string | null> {
+  if (request.headers.get("content-type")?.split(";")[0] !== "application/json") return null;
+  const reader = request.body?.getReader();
+  if (!reader) return null;
+  let size = 0;
+  const chunks: Uint8Array[] = [];
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 20_000) { await reader.cancel(); return null; }
+      chunks.push(value);
+    }
+    const value: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    if (Object.keys(record).length !== 2 ||
+        (record.provider !== "openai-codex" && record.provider !== "openrouter") ||
+        typeof record.model !== "string" || !record.model || record.model.length > 500) return null;
+    return JSON.stringify({ provider: record.provider, model: record.model });
+  } catch { return null; }
+}
+
 // Only these application operations can reach the worker. Never forward browser
 // cookies, Authorization, query parameters, or arbitrary paths upstream.
 export async function assistantRequest(request: NextRequest, segments: string[]) {
   if (!hasSession(request)) return authError("Sign in required.", 401);
   if (!["GET", "HEAD"].includes(request.method) && !hasValidOrigin(request)) return authError("Request origin rejected.", 403);
   const [collection, id, operation] = segments;
-  if (collection !== "conversations" || segments.length > 3 ||
+  const settings = collection === "settings";
+  if (settings) {
+    if (segments.length !== 1) return authError("Settings not found.", 404);
+  } else if (collection !== "conversations" || segments.length > 3 ||
       (id !== undefined && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) ||
       (operation !== undefined && operation !== "turns" && operation !== "events")) {
     return authError("Conversation not found.", 404);
   }
   const streaming = operation === "events";
-  const allowed = operation === "turns" ? ["POST"] : streaming ? ["GET"] : id ? ["GET", "DELETE"] : ["GET", "POST"];
+  const allowed = settings ? ["GET", "PUT"] : operation === "turns" ? ["POST"] : streaming ? ["GET"] : id ? ["GET", "DELETE"] : ["GET", "POST"];
   if (!allowed.includes(request.method)) return authError("Method not allowed.", 405);
   let body: string | undefined;
   if (request.method === "POST") {
     const parsed = await submission(request, operation === "turns");
     if (parsed === null) return authError("Send a JSON message containing only text, up to 8,000 characters, or an empty object to create a conversation.", 400);
+    body = parsed;
+  } else if (request.method === "PUT") {
+    const parsed = await settingsSubmission(request);
+    if (parsed === null) return authError("Choose a supported provider and model.", 400);
     body = parsed;
   }
 
@@ -82,6 +113,7 @@ export async function assistantRequest(request: NextRequest, segments: string[])
       cleanup();
       const safeErrors = [
         "Provider authentication is unavailable. Run worker login.",
+        "OpenRouter authentication is unavailable. Check the worker credential file.",
         "Provider limits are currently exhausted.",
         "Provider is unavailable. Try again later.",
       ];

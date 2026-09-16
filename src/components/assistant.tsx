@@ -10,6 +10,7 @@ import {
   Radio,
   SendHorizontal,
   Server,
+  Settings,
   Trash2,
   WifiOff,
 } from "lucide-react";
@@ -61,6 +62,9 @@ import type {
   TurnStatus,
   MediaResult,
   SavedMediaResult,
+  AssistantModelOption,
+  AssistantProviderId,
+  AssistantSettings,
 } from "@/lib/assistant-contract";
 
 type RequestResult<T> =
@@ -125,6 +129,21 @@ function isConversationDetail(value: unknown): value is ConversationDetail {
 
 function isConversationList(value: unknown): value is ConversationListResponse {
   return isRecord(value) && Array.isArray(value.conversations) && value.conversations.every(isConversation);
+}
+
+function isAssistantModel(value: unknown): value is AssistantModelOption {
+  return isRecord(value) && typeof value.id === "string" && typeof value.name === "string" && typeof value.free === "boolean" &&
+    typeof value.inputCost === "number" && typeof value.outputCost === "number" && typeof value.contextWindow === "number";
+}
+
+function isAssistantSettings(value: unknown): value is AssistantSettings {
+  if (!isRecord(value) || (value.provider !== "openai-codex" && value.provider !== "openrouter") || typeof value.model !== "string") return false;
+  const lastModels = value.lastModels;
+  const providers = value.providers;
+  return isRecord(lastModels) && typeof lastModels["openai-codex"] === "string" && typeof lastModels.openrouter === "string" &&
+    Array.isArray(providers) && providers.every((provider) => isRecord(provider) &&
+      (provider.id === "openai-codex" || provider.id === "openrouter") && typeof provider.name === "string" &&
+      typeof provider.configured === "boolean" && Array.isArray(provider.models) && provider.models.every(isAssistantModel));
 }
 
 async function responseError(response: Response): Promise<string> {
@@ -226,6 +245,15 @@ export function Assistant() {
   const [conversationPendingDeletion, setConversationPendingDeletion] = useState<Conversation | null>(null);
   const [text, setText] = useState("");
   const [optimisticMessage, setOptimisticMessage] = useState<OptimisticMessage | null>(null);
+  const [settings, setSettings] = useState<AssistantSettings | null>(null);
+  const [settingsState, setSettingsState] = useState<"loading" | "ready" | "unavailable">("loading");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsProvider, setSettingsProvider] = useState<AssistantProviderId>("openai-codex");
+  const [settingsModel, setSettingsModel] = useState("gpt-5.5");
+  const [modelSearch, setModelSearch] = useState("");
+  const [modelFilter, setModelFilter] = useState<"all" | "free" | "paid">("all");
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
   const activeIdRef = useRef<string | null>(null);
   const conversationsRef = useRef<Conversation[]>([]);
@@ -282,6 +310,18 @@ export function Assistant() {
     return result.value.conversations;
   }, [commitConversations, redirectIfUnauthorized]);
 
+  const loadSettings = useCallback(async () => {
+    const result = await requestJson("/api/assistant/settings", { method: "GET" }, isAssistantSettings);
+    if (!result.ok) {
+      if (!redirectIfUnauthorized(result.status)) setSettingsState("unavailable");
+      return;
+    }
+    setSettings(result.value);
+    setSettingsProvider(result.value.provider);
+    setSettingsModel(result.value.model);
+    setSettingsState("ready");
+  }, [redirectIfUnauthorized]);
+
   const removeConversation = useCallback((id: string, notice: string) => {
     const remaining = conversationsRef.current.filter((conversation) => conversation.id !== id);
     commitConversations(remaining);
@@ -331,8 +371,9 @@ export function Assistant() {
         selectConversation(next[0].id);
       }
     });
+    void loadSettings();
     return () => { cancelled = true; };
-  }, [refreshConversations, selectConversation]);
+  }, [loadSettings, refreshConversations, selectConversation]);
 
   useEffect(() => {
     if (!activeId) return;
@@ -482,6 +523,43 @@ export function Assistant() {
     }
   };
 
+  const saveSettings = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSettingsError(null);
+    setSettingsSaving(true);
+    const result = await requestJson(
+      "/api/assistant/settings",
+      { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: settingsProvider, model: settingsModel }) },
+      isAssistantSettings,
+    );
+    setSettingsSaving(false);
+    if (!result.ok) {
+      if (!redirectIfUnauthorized(result.status)) setSettingsError(result.error);
+      return;
+    }
+    setSettings(result.value);
+    setSettingsProvider(result.value.provider);
+    setSettingsModel(result.value.model);
+    setSettingsError(null);
+  };
+
+  const changeSettingsProvider = (provider: AssistantProviderId) => {
+    if (!settings) return;
+    const nextProvider = settings.providers.find((item) => item.id === provider);
+    if (!nextProvider) return;
+    const remembered = settings.lastModels[provider];
+    setSettingsProvider(provider);
+    setSettingsModel(nextProvider.models.some((model) => model.id === remembered) ? remembered : nextProvider.models[0]?.id ?? "");
+    setModelSearch("");
+  };
+
+  const selectedProvider = settings?.providers.find((provider) => provider.id === settingsProvider);
+  const selectedModelOption = selectedProvider?.models.find((model) => model.id === settingsModel);
+  const selectedModelAvailable = Boolean(selectedModelOption);
+  const visibleModels = selectedProvider?.models.filter((model) =>
+    (modelFilter === "all" || (modelFilter === "free" ? model.free : !model.free)) &&
+    `${model.name} ${model.id}`.toLowerCase().includes(modelSearch.trim().toLowerCase()),
+  ) ?? [];
   const activeConversation = detail?.id === activeId ? detail : null;
   const messages = activeConversation
     ? optimisticMessage ? [...activeConversation.messages, optimisticMessage] : activeConversation.messages
@@ -568,8 +646,55 @@ export function Assistant() {
             <p className="assistant-eyebrow">Assistant</p>
             <h1>{activeConversation?.title || "Assistant"}</h1>
           </div>
-          {activeConversation?.turn && <Badge variant={turnPresentation[activeConversation.turn.status].variant}>{turnPresentation[activeConversation.turn.status].label}</Badge>}
+          <div className="assistant-page-head__actions">
+            {activeConversation?.turn && <Badge variant={turnPresentation[activeConversation.turn.status].variant}>{turnPresentation[activeConversation.turn.status].label}</Badge>}
+            <Button type="button" variant="outline" size="sm" aria-expanded={settingsOpen} aria-controls="assistant-settings" onClick={() => setSettingsOpen((open) => !open)}>
+              <Settings data-icon="inline-start" aria-hidden="true" /> Settings
+            </Button>
+          </div>
         </header>
+
+        {settingsOpen && (
+          <section className="assistant-settings" id="assistant-settings" aria-labelledby="assistant-settings-title">
+            <div className="assistant-settings__heading">
+              <div>
+                <p className="assistant-eyebrow">Configuration</p>
+                <h2 id="assistant-settings-title">Provider and model</h2>
+              </div>
+              <p>Changes apply to your next message. A reply already running keeps its current model.</p>
+            </div>
+            {settingsState === "loading" && <p role="status">Loading provider options...</p>}
+            {settingsState === "unavailable" && <Alert variant="destructive"><CircleAlert aria-hidden="true" /><AlertDescription>Provider settings are unavailable.</AlertDescription></Alert>}
+            {settingsState === "ready" && settings && (
+              <form className="assistant-settings__form" onSubmit={saveSettings}>
+                <Field>
+                  <FieldLabel htmlFor="assistant-provider">Provider</FieldLabel>
+                  <select id="assistant-provider" value={settingsProvider} onChange={(event) => changeSettingsProvider(event.target.value as AssistantProviderId)}>
+                    {settings.providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}{provider.configured ? " · Configured" : " · Setup required"}</option>)}
+                  </select>
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="assistant-model-search">Model</FieldLabel>
+                  <input id="assistant-model-search" value={modelSearch} onChange={(event) => setModelSearch(event.target.value)} placeholder="Search models" />
+                  <div className="assistant-settings__filters" role="group" aria-label="Model price filter">
+                    {(["all", "free", "paid"] as const).map((filter) => <Button key={filter} type="button" size="xs" variant={modelFilter === filter ? "secondary" : "ghost"} onClick={() => setModelFilter(filter)}>{filter[0].toUpperCase() + filter.slice(1)}</Button>)}
+                  </div>
+                  <select id="assistant-model" value={settingsModel} onChange={(event) => setSettingsModel(event.target.value)} aria-label="Assistant model" size={Math.min(Math.max(visibleModels.length, 1), 8)}>
+                    {visibleModels.map((model) => <option key={model.id} value={model.id}>{model.name} · {model.free ? "Free" : `$${model.inputCost}/$${model.outputCost} per 1M tokens`}</option>)}
+                  </select>
+                  {selectedProvider && !selectedProvider.configured && <p className="assistant-settings__hint">Configure this provider on the Server before sending a message.</p>}
+                  {!selectedModelAvailable && <p className="assistant-settings__hint">The saved model is no longer available. Choose another model before saving.</p>}
+                  {settingsProvider === "openrouter" && selectedModelOption && !selectedModelOption.free && <p className="assistant-settings__hint">Paid model. OpenRouter usage may be billed separately.</p>}
+                </Field>
+                {settingsError && <Alert variant="destructive"><CircleAlert aria-hidden="true" /><AlertDescription>{settingsError}</AlertDescription></Alert>}
+                <div className="assistant-settings__actions">
+                  <p>{visibleModels.length} model{visibleModels.length === 1 ? "" : "s"} shown{selectedProvider?.id === "openrouter" ? ". Free models may still have rate limits." : "."}</p>
+                  <Button type="submit" disabled={settingsSaving || !settingsModel || !selectedModelAvailable}>{settingsSaving ? "Saving..." : "Save settings"}</Button>
+                </div>
+              </form>
+            )}
+          </section>
+        )}
 
         <section className="assistant-thread" aria-label="Conversation">
           <div className="assistant-notices">
@@ -631,7 +756,10 @@ export function Assistant() {
                       <MessageScrollerItem key={message.id} messageId={message.id} scrollAnchor={index === messages.length - 1}>
                         <Message align={message.role === "user" ? "end" : "start"}>
                           <MessageContent>
-                            <MessageHeader>{message.role === "user" ? "You" : "Assistant"}</MessageHeader>
+                            <MessageHeader>
+                              {message.role === "user" ? "You" : "Assistant"}
+                              {message.role === "assistant" && message.provider && message.model && <small className="assistant-message-model">{message.provider === "openrouter" ? "OpenRouter" : "OpenAI Codex"} · {message.model}</small>}
+                            </MessageHeader>
                             <Bubble align={message.role === "user" ? "end" : "start"} variant={message.role === "user" ? "secondary" : "outline"}>
                               <BubbleContent>{message.text}</BubbleContent>
                             </Bubble>

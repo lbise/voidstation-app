@@ -6,7 +6,7 @@ import { EventEmitter } from "node:events";
 import { DatabaseSync } from "node:sqlite";
 import { createAgentSession, SessionManager, type AgentSession, type ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
-import type { Conversation, ConversationDetail, ErrorResponse, Message, Turn } from "./contract.ts";
+import type { AssistantModelOption, AssistantProviderId, AssistantProviderOption, AssistantSettings, Conversation, ConversationDetail, ErrorResponse, Message, Turn } from "./contract.ts";
 import { RestrictedResourceLoader, codexModel, createCodexRuntime, emptySettings, installSanitizedProvider, providerFailure, type ProviderFailureKind } from "./pi.ts";
 import { ConversationStore } from "./store.ts";
 import { createMediaTools } from "./media.ts";
@@ -19,6 +19,7 @@ const DEFAULT_PROVIDER_COOLDOWN_MS = 60_000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 4_000;
 
 type ProviderGate = { kind: Exclude<ProviderFailureKind, "unknown">; error: string; until: number | null };
+type Selection = { provider: AssistantProviderId; model: string };
 type Submission = Turn | "missing" | "running" | { kind: "provider"; error: string };
 
 interface Config {
@@ -35,6 +36,8 @@ interface Config {
 interface ActiveTurn {
   conversationId: string;
   turnId: string;
+  provider: AssistantProviderId;
+  model: string;
   live: Message;
   abort: AbortController;
   settled: boolean;
@@ -50,8 +53,9 @@ class Worker {
   private stopping = false;
   private closed = false;
   private fixture = false;
-  private gate?: ProviderGate;
-  private model!: Model<any>;
+  private readonly gates = new Map<AssistantProviderId, ProviderGate>();
+  private fixtureModel!: Model<any>;
+  private selection: Selection = { provider: "openai-codex", model: "gpt-5.5" };
   private runtime!: ModelRuntime;
   readonly store: ConversationStore;
 
@@ -64,21 +68,27 @@ class Worker {
 
   async initialize(): Promise<void> {
     this.runtime = await createCodexRuntime(this.config.credentialDir);
+    await this.loadOpenRouterApiKey();
     this.fixture = Boolean(process.env.VOIDSTATION_TEST_MODEL_FILE);
     if (this.fixture) {
       if (process.env.NODE_ENV !== "test") throw new Error("The deterministic model fixture is test-only.");
       const { installFixtureModel } = await import("./test-fixture.ts");
-      this.model = installFixtureModel(this.runtime);
+      this.fixtureModel = installFixtureModel(this.runtime);
       installSanitizedProvider(this.runtime, "voidstation-test");
-      return;
+    } else {
+      if (process.env.OPENAI_API_KEY) throw new Error("API-key provider configuration is not allowed.");
+      const credentials = await this.runtime.listCredentials();
+      if (credentials.some((credential) => credential.providerId === "openai-codex" && credential.type !== "oauth")) {
+        throw new Error("Only OpenAI Codex OAuth credentials are allowed.");
+      }
+      installSanitizedProvider(this.runtime, "openai-codex");
+      installSanitizedProvider(this.runtime, "openrouter");
     }
-    if (process.env.OPENAI_API_KEY) throw new Error("API-key provider configuration is not allowed.");
-    const credentials = await this.runtime.listCredentials();
-    if (credentials.some((credential) => credential.providerId === "openai-codex" && credential.type !== "oauth")) {
-      throw new Error("Only OpenAI Codex OAuth credentials are allowed.");
-    }
-    installSanitizedProvider(this.runtime, "openai-codex");
-    this.model = codexModel(this.runtime);
+    const saved = this.store.getAssistantSettings();
+    const provider = isProviderId(saved.provider) ? saved.provider : "openai-codex";
+    const model = isProviderId(saved.provider) ? saved.model : this.defaultModel(provider);
+    this.selection = { provider, model };
+    if (saved.provider !== provider) this.store.setAssistantSettings(provider, model);
   }
 
   createConversation(): Conversation {
@@ -92,16 +102,21 @@ class Worker {
 
   async submitTurn(conversationId: string, text: string): Promise<Submission> {
     if (this.hasActiveTurn(conversationId)) return "running";
-    const blocked = await this.providerBlocked();
+    const selection = this.selection;
+    const blocked = await this.providerBlocked(selection.provider);
     if (blocked) return { kind: "provider", error: blocked };
-    const turn = this.store.startTurn(conversationId, text);
+    const model = this.modelFor(selection);
+    if (!model) return { kind: "provider", error: "The selected model is unavailable." };
+    const turn = this.store.startTurn(conversationId, text, selection.provider, selection.model);
     if (typeof turn === "string") return turn;
     const task: ActiveTurn = {
       conversationId,
       turnId: turn.id,
-      live: { id: randomUUID(), role: "assistant", text: "" },
+      live: { id: randomUUID(), role: "assistant", text: "", provider: selection.provider, model: selection.model },
       abort: new AbortController(),
       settled: false,
+      provider: selection.provider,
+      model: selection.model,
     };
     this.activeTurns.set(turn.id, task);
     task.promise = this.runTurn(task, text);
@@ -154,24 +169,81 @@ class Worker {
     return completed;
   }
 
-  private async providerBlocked(): Promise<string | undefined> {
-    if (this.gate && (this.gate.until === null || this.gate.until > Date.now())) return this.gate.error;
-    this.gate = undefined;
+  private async providerBlocked(provider: AssistantProviderId): Promise<string | undefined> {
+    const gate = this.gates.get(provider);
+    if (gate && (gate.until === null || gate.until > Date.now())) return gate.error;
+    this.gates.delete(provider);
     if (this.fixture) return undefined;
-    const auth = await this.runtime.checkAuth("openai-codex");
-    if (auth?.type === "oauth") return undefined;
-    const failure = providerFailure("authentication");
-    this.setGate(failure.kind, failure.message);
+    const auth = await this.runtime.checkAuth(provider);
+    if (auth) return undefined;
+    const failure = providerFailure("authentication", provider);
+    this.setGate(provider, failure.kind, failure.message);
     return failure.message;
   }
 
-  private setGate(kind: ProviderFailureKind, error: string): void {
+  private setGate(provider: AssistantProviderId, kind: ProviderFailureKind, error: string): void {
     if (kind === "unknown") return;
-    this.gate = {
+    this.gates.set(provider, {
       kind,
       error,
       until: kind === "authentication" ? null : Date.now() + this.config.providerCooldownMs,
+    });
+  }
+
+  private async loadOpenRouterApiKey(): Promise<void> {
+    const path = join(this.config.credentialDir, "openrouter-api-key");
+    try {
+      const key = readFileSync(path, "utf8").trim();
+      if (!key || /\s/.test(key)) throw new Error("OpenRouter API key file is invalid.");
+      await this.runtime.setRuntimeApiKey("openrouter", key);
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+
+  private validModel(provider: AssistantProviderId, model: string): boolean {
+    if (provider === "openai-codex") return model === codexModel(this.runtime).id;
+    const candidate = this.runtime.getModel(provider, model);
+    return Boolean(candidate && isSelectableOpenRouterModel(candidate));
+  }
+
+  private defaultModel(provider: AssistantProviderId): string {
+    if (provider === "openai-codex") return codexModel(this.runtime).id;
+    const model = this.runtime.getModels("openrouter").find(isSelectableOpenRouterModel);
+    if (!model) throw new Error("The pinned Pi runtime does not include an OpenRouter model.");
+    return model.id;
+  }
+
+  private modelFor(selection: Selection): Model<any> | undefined {
+    return this.fixture ? this.fixtureModel : this.validModel(selection.provider, selection.model) ? this.runtime.getModel(selection.provider, selection.model) : undefined;
+  }
+
+  assistantSettings(): Promise<AssistantSettings> {
+    return this.providerOptions().then((providers) => {
+      const saved = this.store.getAssistantSettings();
+      return { provider: this.selection.provider, model: this.selection.model, lastModels: saved.lastModels, providers };
+    });
+  }
+
+  async updateAssistantSettings(provider: string, model: string): Promise<"invalid" | AssistantSettings> {
+    if (!isProviderId(provider) || typeof model !== "string" || !this.validModel(provider, model)) return "invalid";
+    this.selection = { provider, model };
+    this.store.setAssistantSettings(provider, model);
+    return this.assistantSettings();
+  }
+
+  private async providerOptions(): Promise<AssistantProviderOption[]> {
+    const codex = codexModel(this.runtime);
+    const openrouterModels = this.runtime.getModels("openrouter").filter(isSelectableOpenRouterModel);
+    const status = async (provider: AssistantProviderId) => {
+      if (this.fixture) return true;
+      try { return Boolean(await this.runtime.checkAuth(provider)); }
+      catch { return false; }
     };
+    return [
+      { id: "openai-codex", name: "OpenAI Codex", configured: await status("openai-codex"), models: [modelOption(codex)] },
+      { id: "openrouter", name: "OpenRouter", configured: await status("openrouter"), models: openrouterModels.map(modelOption) },
+    ];
   }
 
   private async runTurn(task: ActiveTurn, text: string): Promise<void> {
@@ -179,7 +251,7 @@ class Worker {
       task.abort.abort();
       void task.session?.abort().catch(() => {});
       const failure = providerFailure("timeout");
-      this.setGate(failure.kind, failure.message);
+      this.setGate(task.provider, failure.kind, failure.message);
       this.settle(task, "failure", "The assistant took too long to reply.");
       // Do not release this conversation while Pi may still append its transcript.
       task.forceExitTimer = setTimeout(() => {
@@ -189,13 +261,14 @@ class Worker {
     let unsubscribe: (() => void) | undefined;
     try {
       const transcriptPath = this.store.getTranscriptPath(task.conversationId);
-      if (!transcriptPath || task.settled || this.stopping) return;
+      const model = this.modelFor({ provider: task.provider, model: task.model });
+      if (!transcriptPath || !model || task.settled || this.stopping) return;
       const sessionManager = SessionManager.open(transcriptPath, join(this.config.conversationDir, "transcripts"), "/voidstation");
       const created = await createAgentSession({
         cwd: "/voidstation",
         agentDir: this.config.credentialDir,
         modelRuntime: this.runtime,
-        model: this.model,
+        model,
         thinkingLevel: "medium",
         noTools: "builtin",
         customTools: createMediaTools((result: MediaResult) => {
@@ -223,16 +296,16 @@ class Worker {
       }
       const rawError = assistantError(task.session);
       if (rawError) {
-        const failure = providerFailure(rawError);
-        this.setGate(failure.kind, failure.message);
+        const failure = providerFailure(rawError, task.provider);
+        this.setGate(task.provider, failure.kind, failure.message);
         this.settle(task, "failure", failure.message);
       } else {
         this.settle(task, "complete", null, assistantText(task.session), task.live.id);
       }
     } catch (error) {
       if (!task.settled) {
-        const failure = providerFailure(error);
-        this.setGate(failure.kind, failure.message);
+        const failure = providerFailure(error, task.provider);
+        this.setGate(task.provider, failure.kind, failure.message);
         this.settle(task, this.stopping ? "interrupted" : "failure", this.stopping ? "The worker stopped before this reply finished." : failure.message);
       }
     } finally {
@@ -357,6 +430,15 @@ async function route(request: IncomingMessage, response: ServerResponse, worker:
   const url = new URL(request.url ?? "/", "http://worker.internal");
   const parts = url.pathname.split("/").filter(Boolean);
   if (request.method === "GET" && url.pathname === "/health") return send(response, 200, { ok: true });
+  if (url.pathname === "/settings") {
+    if (request.method === "GET") return send(response, 200, await worker.assistantSettings());
+    if (request.method === "PUT") {
+      const payload = await body(request);
+      if (!isSettingsBody(payload)) return error(response, 400, "Expected a supported provider and model.");
+      const updated = await worker.updateAssistantSettings(payload.provider, payload.model);
+      return updated === "invalid" ? error(response, 400, "That provider/model selection is not supported.") : send(response, 200, updated);
+    }
+  }
   if (request.method === "GET" && url.pathname === "/conversations") return send(response, 200, { conversations: worker.store.listConversations() });
   if (request.method === "POST" && url.pathname === "/conversations") {
     const payload = await body(request);
@@ -390,6 +472,24 @@ async function route(request: IncomingMessage, response: ServerResponse, worker:
 }
 
 function isEmptyObject(value: unknown): value is Record<string, never> { return typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length === 0; }
+function isProviderId(value: unknown): value is AssistantProviderId { return value === "openai-codex" || value === "openrouter"; }
+function isSelectableOpenRouterModel(model: Model<any>): boolean {
+  return model.input.includes("text") && (model.api === "openai-completions" || model.api === "anthropic-messages");
+}
+function modelOption(model: Model<any>): AssistantModelOption {
+  return {
+    id: model.id,
+    name: model.name,
+    free: model.cost.input === 0 && model.cost.output === 0,
+    inputCost: model.cost.input,
+    outputCost: model.cost.output,
+    contextWindow: model.contextWindow,
+  };
+}
+function isSettingsBody(value: unknown): value is { provider: AssistantProviderId; model: string } {
+  return typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length === 2
+    && isProviderId((value as { provider?: unknown }).provider) && typeof (value as { model?: unknown }).model === "string";
+}
 function isTurnBody(value: unknown): value is { text: string } {
   return typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length === 1
     && typeof (value as { text?: unknown }).text === "string" && (value as { text: string }).text.trim().length > 0

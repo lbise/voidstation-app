@@ -6,11 +6,13 @@ import type { Conversation, ConversationDetail, Message, Turn, TurnStatus, Saved
 import type { MediaResult } from "./media-contract.ts";
 
 interface ConversationRow { id: string; title: string; created_at: string; updated_at: string; transcript_path: string; }
-interface TurnRow { id: string; conversation_id: string; status: TurnStatus; error: string | null; started_at: string; finished_at: string | null; }
+interface TurnRow { id: string; conversation_id: string; status: TurnStatus; error: string | null; provider: string; model: string; started_at: string; finished_at: string | null; }
+interface MessageRow { id: string; role: Message["role"]; text: string; provider: string | null; model: string | null; }
+interface AssistantSettingsRow { provider: string; model: string; codex_model: string; openrouter_model: string; }
 interface DeletionRow { conversation_id: string; transcript_path: string; trash_path: string; }
 
 const now = () => new Date().toISOString();
-const turn = (row: TurnRow): Turn => ({ id: row.id, status: row.status, error: row.error, startedAt: row.started_at, finishedAt: row.finished_at });
+const turn = (row: TurnRow): Turn => ({ id: row.id, status: row.status, error: row.error, provider: row.provider, model: row.model, startedAt: row.started_at, finishedAt: row.finished_at });
 
 export class ConversationStore {
   private readonly database: DatabaseSync;
@@ -40,7 +42,7 @@ export class ConversationStore {
       CREATE TABLE IF NOT EXISTS turns (
         id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
         status TEXT NOT NULL CHECK(status IN ('running', 'complete', 'interrupted', 'failure')),
-        error TEXT, started_at TEXT NOT NULL, finished_at TEXT
+        error TEXT, provider TEXT NOT NULL DEFAULT 'openai-codex', model TEXT NOT NULL DEFAULT 'gpt-5.5', started_at TEXT NOT NULL, finished_at TEXT
       );
       CREATE UNIQUE INDEX IF NOT EXISTS one_running_turn_per_conversation ON turns(conversation_id) WHERE status = 'running';
       CREATE TABLE IF NOT EXISTS messages (
@@ -56,7 +58,14 @@ export class ConversationStore {
       CREATE TABLE IF NOT EXISTS deletions (
         conversation_id TEXT PRIMARY KEY, transcript_path TEXT NOT NULL, trash_path TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS assistant_settings (
+        id INTEGER PRIMARY KEY CHECK(id = 1), provider TEXT NOT NULL, model TEXT NOT NULL,
+        codex_model TEXT NOT NULL, openrouter_model TEXT NOT NULL
+      );
     `);
+    const columns = this.database.prepare("PRAGMA table_info(turns)").all() as unknown as { name: string }[];
+    if (!columns.some((column) => column.name === "provider")) this.database.exec("ALTER TABLE turns ADD COLUMN provider TEXT NOT NULL DEFAULT 'openai-codex'");
+    if (!columns.some((column) => column.name === "model")) this.database.exec("ALTER TABLE turns ADD COLUMN model TEXT NOT NULL DEFAULT 'gpt-5.5'");
   }
 
   private interruptRunningTurns(): void {
@@ -102,12 +111,15 @@ export class ConversationStore {
   getDetail(id: string): ConversationDetail | undefined {
     const conversation = this.getConversation(id);
     if (!conversation) return undefined;
-    const messages = this.database.prepare("SELECT id, role, text FROM messages WHERE conversation_id = ? ORDER BY position ASC")
-      .all(id) as unknown as Message[];
+    const messages = this.database.prepare("SELECT messages.id, messages.role, messages.text, turns.provider, turns.model FROM messages LEFT JOIN turns ON turns.id = messages.turn_id WHERE messages.conversation_id = ? ORDER BY messages.position ASC")
+      .all(id) as unknown as MessageRow[];
     const results = this.database.prepare("SELECT id, turn_id, result FROM media_results WHERE conversation_id = ? ORDER BY position ASC")
       .all(id) as unknown as { id: string; turn_id: string; result: string }[];
     const mediaResults: SavedMediaResult[] = results.map((row) => ({ id: row.id, turnId: row.turn_id, result: JSON.parse(row.result) as MediaResult }));
-    return { ...conversation, messages, mediaResults };
+    return { ...conversation, messages: messages.map((message) => ({
+      id: message.id, role: message.role, text: message.text,
+      ...(message.role === "assistant" && message.provider && message.model ? { provider: message.provider, model: message.model } : {}),
+    })), mediaResults };
   }
 
   saveMediaResult(conversationId: string, turnId: string, result: MediaResult): void {
@@ -121,7 +133,7 @@ export class ConversationStore {
     return row && this.absoluteTranscriptPath(row.transcript_path);
   }
 
-  startTurn(conversationId: string, text: string): Turn | "missing" | "running" {
+  startTurn(conversationId: string, text: string, provider = "openai-codex", model = "gpt-5.5"): Turn | "missing" | "running" {
     const id = randomUUID();
     const startedAt = now();
     this.database.exec("BEGIN IMMEDIATE");
@@ -135,8 +147,8 @@ export class ConversationStore {
         return "running";
       }
       try {
-        this.database.prepare("INSERT INTO turns (id, conversation_id, status, error, started_at, finished_at) VALUES (?, ?, 'running', NULL, ?, NULL)")
-          .run(id, conversationId, startedAt);
+        this.database.prepare("INSERT INTO turns (id, conversation_id, status, error, provider, model, started_at, finished_at) VALUES (?, ?, 'running', NULL, ?, ?, ?, NULL)")
+          .run(id, conversationId, provider, model, startedAt);
       } catch {
         this.database.exec("ROLLBACK");
         return "running";
@@ -145,7 +157,7 @@ export class ConversationStore {
       const title = text.trim().slice(0, 80) || "New conversation";
       this.database.prepare("UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?").run(title, startedAt, conversationId);
       this.database.exec("COMMIT");
-      return { id, status: "running", error: null, startedAt, finishedAt: null };
+      return { id, status: "running", error: null, provider, model, startedAt, finishedAt: null };
     } catch (error) {
       this.database.exec("ROLLBACK");
       throw error;
@@ -216,6 +228,20 @@ export class ConversationStore {
     rmSync(transcriptPath, { force: true });
     this.database.prepare("DELETE FROM deletions WHERE conversation_id = ?").run(id);
     return "deleted";
+  }
+
+  getAssistantSettings(): { provider: string; model: string; lastModels: { "openai-codex": string; openrouter: string } } {
+    const row = this.database.prepare("SELECT provider, model, codex_model, openrouter_model FROM assistant_settings WHERE id = 1").get() as AssistantSettingsRow | undefined;
+    if (!row) return { provider: "openai-codex", model: "gpt-5.5", lastModels: { "openai-codex": "gpt-5.5", openrouter: "" } };
+    return { provider: row.provider, model: row.model, lastModels: { "openai-codex": row.codex_model, openrouter: row.openrouter_model } };
+  }
+
+  setAssistantSettings(provider: "openai-codex" | "openrouter", model: string): void {
+    const current = this.getAssistantSettings();
+    const lastModels = { ...current.lastModels, [provider]: model };
+    this.database.prepare(`INSERT INTO assistant_settings (id, provider, model, codex_model, openrouter_model) VALUES (1, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET provider = excluded.provider, model = excluded.model, codex_model = excluded.codex_model, openrouter_model = excluded.openrouter_model`)
+      .run(provider, model, lastModels["openai-codex"], lastModels.openrouter);
   }
 
   close(): void { this.database.close(); }
