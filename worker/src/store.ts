@@ -2,13 +2,14 @@ import { DatabaseSync } from "node:sqlite";
 import { chmodSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Conversation, ConversationDetail, Message, Turn, TurnStatus, SavedMediaResult } from "./contract.ts";
+import type { Conversation, ConversationDetail, Message, ToolCallRecord, Turn, TurnStatus, SavedMediaResult } from "./contract.ts";
 import type { MediaResult } from "./media-contract.ts";
 
 interface ConversationRow { id: string; title: string; created_at: string; updated_at: string; transcript_path: string; }
 interface TurnRow { id: string; conversation_id: string; status: TurnStatus; error: string | null; provider: string; model: string; started_at: string; finished_at: string | null; }
 interface MessageRow { id: string; role: Message["role"]; text: string; provider: string | null; model: string | null; }
 interface AssistantSettingsRow { provider: string; model: string; codex_model: string; openrouter_model: string; }
+interface ToolCallRow { id: string; turn_id: string; name: string; parameters: string; result: string; status: "complete" | "error"; position: number; }
 interface DeletionRow { conversation_id: string; transcript_path: string; trash_path: string; }
 
 const now = () => new Date().toISOString();
@@ -61,6 +62,11 @@ export class ConversationStore {
       CREATE TABLE IF NOT EXISTS assistant_settings (
         id INTEGER PRIMARY KEY CHECK(id = 1), provider TEXT NOT NULL, model TEXT NOT NULL,
         codex_model TEXT NOT NULL, openrouter_model TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS tool_calls (
+        id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE, name TEXT NOT NULL,
+        parameters TEXT NOT NULL, result TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('complete', 'error')), position INTEGER NOT NULL
       );
     `);
     const columns = this.database.prepare("PRAGMA table_info(turns)").all() as unknown as { name: string }[];
@@ -116,16 +122,27 @@ export class ConversationStore {
     const results = this.database.prepare("SELECT id, turn_id, result FROM media_results WHERE conversation_id = ? ORDER BY position ASC")
       .all(id) as unknown as { id: string; turn_id: string; result: string }[];
     const mediaResults: SavedMediaResult[] = results.map((row) => ({ id: row.id, turnId: row.turn_id, result: JSON.parse(row.result) as MediaResult }));
+    const toolRows = this.database.prepare("SELECT id, turn_id, name, parameters, result, status, position FROM tool_calls WHERE conversation_id = ? ORDER BY position ASC")
+      .all(id) as unknown as ToolCallRow[];
+    const toolCalls: ToolCallRecord[] = toolRows.map((row) => ({ id: row.id, turnId: row.turn_id, name: row.name, parameters: JSON.parse(row.parameters) as Record<string, unknown>, result: JSON.parse(row.result) as unknown, status: row.status }));
     return { ...conversation, messages: messages.map((message) => ({
       id: message.id, role: message.role, text: message.text,
       ...(message.role === "assistant" && message.provider && message.model ? { provider: message.provider, model: message.model } : {}),
-    })), mediaResults };
+    })), mediaResults, toolCalls };
   }
 
   saveMediaResult(conversationId: string, turnId: string, result: MediaResult): void {
-    // Called only by the restricted executor, never inferred from Assistant prose.
     this.database.prepare("INSERT INTO media_results (id, conversation_id, turn_id, result) VALUES (?, ?, ?, ?)")
       .run(randomUUID(), conversationId, turnId, JSON.stringify(result));
+  }
+
+  saveToolCalls(conversationId: string, turnId: string, calls: ToolCallRecord[]): void {
+    if (calls.length === 0) return;
+    const nextPosition = (this.database.prepare("SELECT COALESCE(MAX(position), 0) + 1 AS position FROM tool_calls WHERE conversation_id = ?").get(conversationId) as { position: number }).position;
+    const insert = this.database.prepare("INSERT OR REPLACE INTO tool_calls (id, conversation_id, turn_id, name, parameters, result, status, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+    for (const [index, call] of calls.entries()) {
+      insert.run(call.id, conversationId, turnId, call.name, JSON.stringify(call.parameters), JSON.stringify(call.result), call.status, nextPosition + index);
+    }
   }
 
   getTranscriptPath(id: string): string | undefined {

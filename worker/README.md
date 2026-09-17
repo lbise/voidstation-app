@@ -10,7 +10,7 @@ npm ci
 npm run build
 ```
 
-Create a worker-only token file with at least 32 characters and restrict it to the worker account. Keep conversation storage, credential storage, and the read-only media configuration on separate durable volumes.
+Create a worker-only token file with at least 32 characters and restrict it to the worker account. Keep conversation storage, credential storage, and the media configuration on separate durable volumes.
 
 ```sh
 install -d -m 700 /srv/voidstation/conversations /srv/voidstation/credentials
@@ -67,7 +67,7 @@ All routes require worker-token authentication.
 - `POST /conversations/:id/turns` with `{ "text": string }` returns `202 Turn`, or `409` for a competing turn
 - `GET /conversations/:id/events` is an SSE stream of `snapshot` events containing `ConversationDetail`
 
-`ConversationDetail.mediaResults` contains structured, sanitized evidence from read-only media tools. The only tools are `read_skill`, `media_lookup`, `media_discover`, and `media_status`. They use Radarr for movies and Sonarr for series. The worker validates root folders and quality profiles against the selected service and never picks the first returned resource. No media mutation or download search is exposed.
+`ConversationDetail.mediaResults` contains structured, sanitized evidence from `media_find`, `media_details`, `media_configure`, and `media_search`. They use Radarr for movies and Sonarr for series. To add a new series, the Sonarr section of the media configuration must include a positive `languageProfileId`. The worker validates configured folders and quality profiles, never picks an ambiguous title, and never exposes arbitrary service API requests. Configuration changes and searches return structured results, but do not claim that a download started or media became available.
 
 The worker stores only durable snapshots for the application. While a turn runs, SSE snapshots include one ephemeral assistant message that grows from real Pi text deltas and keeps the same ID when it becomes the saved message. SSE sends current state at connection, after changes, and periodically. It does not promise token replay.
 
@@ -86,4 +86,4 @@ The deterministic model is available only when `NODE_ENV=test`. Set `VOIDSTATION
 
 The fixture file is reread for each submitted turn and steps are selected sequentially, wrapping at the end. `chunks` emits incremental text deltas. `error` accepts `authentication`, `limits`, `unavailable`, and `hang`; `rawError` supplies a synthetic suffix to verify transcript redaction. `fault: "construct"` and `fault: "iterator"` test synchronous stream construction and asynchronous iterator failures. `ignoreAbort: true` with `error: "hang"` simulates a noncooperative provider: the visible timeout failure does not unlock the conversation, and the process exits at the shutdown deadline rather than risking later transcript writes. Tests still create real Pi sessions, transcript files, and agent sessions. Set optional absolute `VOIDSTATION_TEST_ASSERTIONS_FILE` to append redacted model messages, system prompt, and tool names. The production Docker image removes this adapter.
 
-Pi resource loading is explicit. The worker does not discover host resources. Only the pinned `worker/skills` snapshot can be read through `read_skill`; supporting files must be manifest-listed and hash-verified. The worker uses in-memory settings, no context files, no extensions, no packages, no prompts, and only the four read-only media tools. It never discovers a host Pi installation, settings, credentials, sessions, workspace, extensions, or skills.
+Pi resource loading is explicit. The worker does not discover host resources. The worker uses in-memory settings, no context files, no extensions, no packages, no prompts, and only the four media tools. It never discovers a host Pi installation, settings, credentials, sessions, workspace, extensions, or skills.

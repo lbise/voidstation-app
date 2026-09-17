@@ -29,9 +29,19 @@ export type Conversation = {
   turn: Turn | null;
 };
 
+export type ToolCallRecord = {
+  id: string;
+  turnId: string;
+  name: string;
+  parameters: Record<string, unknown>;
+  result: unknown;
+  status: "complete" | "error";
+};
+
 export type ConversationDetail = Conversation & {
   messages: Message[];
   mediaResults: SavedMediaResult[];
+  toolCalls: ToolCallRecord[];
 };
 
 export type ErrorResponse = {

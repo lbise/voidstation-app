@@ -313,7 +313,7 @@ it("keeps synthetic provider errors and internal secrets out of history, Pi tran
   const failed = await settled(conversation.id);
   expect(failed.turn?.status).toBe("failure");
   const context = await readFile(assertions, "utf8");
-  expect(JSON.parse(context.trim()).tools).toEqual(["read_skill", "media_lookup", "media_discover", "media_status"]);
+  expect(JSON.parse(context.trim()).tools).toEqual(["media_find", "media_details", "media_configure", "media_search"]);
   const transcriptRoot = join(server.directory, "conversations", "transcripts");
   const transcripts = await readdir(transcriptRoot, { recursive: true });
   const content = await Promise.all(transcripts.filter((path) => path.endsWith(".jsonl")).map((path) => readFile(join(transcriptRoot, path), "utf8")));

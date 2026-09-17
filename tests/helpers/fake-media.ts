@@ -70,13 +70,14 @@ async function startService(service: MediaService, requests: MediaRequest[]) {
   const key = `${service}-test-key-canary`;
   const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://media.test");
+    const requestBody = await readBody(request);
     requests.push({
       service,
       method: request.method ?? "GET",
       path: url.pathname,
       query: Object.fromEntries(url.searchParams),
       headers: request.headers,
-      body: await readBody(request),
+      body: requestBody,
     });
     if (request.headers["x-api-key"] !== key) return send(response, 401, { message: "Unauthorized" });
     const prefix = "/api/v3";
@@ -86,6 +87,14 @@ async function startService(service: MediaService, requests: MediaRequest[]) {
     if (request.method === "GET" && resource === "/rootfolder") return send(response, 200, fixture.rootFolders);
     if (request.method === "GET" && resource === "/qualityprofile") return send(response, 200, fixture.qualityProfiles);
     if (request.method === "GET" && resource === "/queue") return send(response, 200, { records: fixture.queue });
+    if (request.method === "GET" && resource === "/episode") return send(response, 200, []);
+    if (request.method === "POST" && (resource === "/movie" || resource === "/series")) {
+      const payload = requestBody && typeof requestBody === "object" ? { ...(requestBody as Record<string, unknown>), id: 100 } : { id: 100 };
+      fixture.tracked.push(payload);
+      return send(response, 201, payload);
+    }
+    if (request.method === "PUT" && /^\/(movie|series)\/\d+$/.test(resource)) return send(response, 200, requestBody ?? {});
+    if (request.method === "POST" && resource === "/command") return send(response, 201, { id: 42, name: (requestBody as { name?: unknown })?.name ?? "Command" });
     return send(response, 404, { message: "Not found" });
   });
   server.listen(0, "127.0.0.1");
@@ -134,6 +143,7 @@ export async function fakeMedia(): Promise<FakeMedia> {
           keyFile: sonarrKey,
           rootFolder: "/media/series",
           defaultQualityProfileId: 5,
+          languageProfileId: 8,
           qualityMappings: { "4K": 9 },
         },
       }), { mode: 0o600 });

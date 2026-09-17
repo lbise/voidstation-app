@@ -6,7 +6,7 @@ import { EventEmitter } from "node:events";
 import { DatabaseSync } from "node:sqlite";
 import { createAgentSession, SessionManager, type AgentSession, type ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
-import type { AssistantModelOption, AssistantProviderId, AssistantProviderOption, AssistantSettings, Conversation, ConversationDetail, ErrorResponse, Message, Turn } from "./contract.ts";
+import type { AssistantModelOption, AssistantProviderId, AssistantProviderOption, AssistantSettings, Conversation, ConversationDetail, ErrorResponse, Message, ToolCallRecord, Turn } from "./contract.ts";
 import { RestrictedResourceLoader, codexModel, createCodexRuntime, emptySettings, installSanitizedProvider, providerFailure, type ProviderFailureKind } from "./pi.ts";
 import { ConversationStore } from "./store.ts";
 import { createMediaTools } from "./media.ts";
@@ -272,7 +272,7 @@ class Worker {
         thinkingLevel: "medium",
         noTools: "builtin",
         customTools: createMediaTools((result: MediaResult) => {
-          if (result.kind !== "skill") this.store.saveMediaResult(task.conversationId, task.turnId, result);
+          this.store.saveMediaResult(task.conversationId, task.turnId, result);
         }),
         resourceLoader: new RestrictedResourceLoader(),
         settingsManager: emptySettings(),
@@ -288,7 +288,10 @@ class Worker {
         await task.session.abort();
         return;
       }
+      const messageStart = task.session.messages.length;
       await task.session.prompt(text);
+      this.store.saveToolCalls(task.conversationId, task.turnId, extractToolCalls(task.session, task.turnId, messageStart));
+      this.emit(task.conversationId);
       if (task.settled) return;
       if (this.stopping) {
         this.settle(task, "interrupted", "The worker stopped before this reply finished.");
@@ -331,6 +334,40 @@ class Worker {
     this.changes.on(conversationId, listener);
     return () => this.changes.off(conversationId, listener);
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function extractToolCalls(session: AgentSession, turnId: string, startIndex: number): ToolCallRecord[] {
+  const calls = new Map<string, ToolCallRecord>();
+  for (const message of (session.messages as unknown[]).slice(startIndex)) {
+    if (!message || typeof message !== "object") continue;
+    const record = message as Record<string, unknown>;
+    if (record.role === "assistant" && Array.isArray(record.content)) {
+      for (const content of record.content) {
+        if (!content || typeof content !== "object") continue;
+        const tool = content as Record<string, unknown>;
+        if (tool.type !== "toolCall" || typeof tool.id !== "string" || typeof tool.name !== "string") continue;
+        calls.set(tool.id, { id: tool.id, turnId, name: tool.name, parameters: isRecord(tool.arguments) ? tool.arguments : {}, result: null, status: "complete" });
+      }
+    }
+    if (record.role === "toolResult" && typeof record.toolCallId === "string") {
+      const call = calls.get(record.toolCallId);
+      if (!call) continue;
+      const detailsRecord = isRecord(record.details) ? record.details : undefined;
+      const details = detailsRecord && Object.hasOwn(detailsRecord, "result") ? detailsRecord.result : undefined;
+      const content = Array.isArray(record.content) ? record.content.find((item) => isRecord(item) && item.type === "text" && typeof item.text === "string") as Record<string, unknown> | undefined : undefined;
+      let result: unknown = details ?? content?.text ?? null;
+      if (typeof result === "string") {
+        try { result = JSON.parse(result) as unknown; } catch { /* Keep bounded text if a tool returned non-JSON text. */ }
+      }
+      call.result = result;
+      call.status = record.isError === true ? "error" : "complete";
+    }
+  }
+  return [...calls.values()];
 }
 
 function assistantText(session: AgentSession): string {

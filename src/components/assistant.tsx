@@ -13,6 +13,7 @@ import {
   Settings,
   Trash2,
   WifiOff,
+  Wrench,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -62,6 +63,7 @@ import type {
   TurnStatus,
   MediaResult,
   SavedMediaResult,
+  ToolCallRecord,
   AssistantModelOption,
   AssistantProviderId,
   AssistantSettings,
@@ -105,13 +107,19 @@ function isTurn(value: unknown): value is Turn {
 }
 
 function isMediaResult(value: unknown): value is MediaResult {
-  return isRecord(value) && (value.kind === "skill" || value.kind === "lookup" || value.kind === "discovery" || value.kind === "status" || value.kind === "error");
+  return isRecord(value) && (value.kind === "find" || value.kind === "lookup" || value.kind === "details" || value.kind === "discovery" || value.kind === "status" || value.kind === "skill" || value.kind === "configure" || value.kind === "search" || value.kind === "error");
+}
+
+function isToolCall(value: unknown): value is ToolCallRecord {
+  return isRecord(value) && typeof value.id === "string" && typeof value.turnId === "string" && typeof value.name === "string" &&
+    isRecord(value.parameters) && (value.status === "complete" || value.status === "error") && Object.hasOwn(value, "result");
 }
 
 function isConversationDetail(value: unknown): value is ConversationDetail {
   if (!isRecord(value)) return false;
   const messages = value.messages;
   const mediaResults = value.mediaResults;
+  const toolCalls = value.toolCalls;
   return (
     isConversation(value) &&
     Array.isArray(messages) &&
@@ -123,7 +131,8 @@ function isConversationDetail(value: unknown): value is ConversationDetail {
         typeof message.text === "string",
     ) &&
     Array.isArray(mediaResults) &&
-    mediaResults.every((entry) => isRecord(entry) && typeof entry.id === "string" && typeof entry.turnId === "string" && isMediaResult(entry.result))
+    mediaResults.every((entry) => isRecord(entry) && typeof entry.id === "string" && typeof entry.turnId === "string" && isMediaResult(entry.result)) &&
+    Array.isArray(toolCalls) && toolCalls.every(isToolCall)
   );
 }
 
@@ -197,10 +206,13 @@ const turnPresentation = {
 } satisfies Record<TurnStatus, { label: string; variant: "default" | "secondary" | "warning" | "destructive" }>;
 
 function mediaResultLabel(result: MediaResult): string {
+  if (result.kind === "find") return `${result.choices.length + result.library.length} media result${result.choices.length + result.library.length === 1 ? "" : "s"}`;
   if (result.kind === "lookup") return `${result.choices.length} title choice${result.choices.length === 1 ? "" : "s"}`;
+  if (result.kind === "details" || result.kind === "status") return `${result.type === "movie" ? "Movie" : "Series"} details`;
   if (result.kind === "discovery") return `${result.type === "movie" ? "Movie" : "Series"} defaults validated`;
-  if (result.kind === "status") return `${result.type === "movie" ? "Movie" : "Series"} status`;
   if (result.kind === "skill") return `${result.service} skill loaded`;
+  if (result.kind === "configure") return `${result.type === "movie" ? "Movie" : "Series"} configuration changed`;
+  if (result.kind === "search") return `${result.type === "movie" ? "Movie" : "Series"} search accepted`;
   return `Media ${result.operation} failed`;
 }
 
@@ -210,17 +222,9 @@ function MediaResultCard({ entry }: { entry: SavedMediaResult }) {
     <article className="assistant-media-result" aria-label={mediaResultLabel(result)}>
       <div className="assistant-media-result__heading">
         <strong>{mediaResultLabel(result)}</strong>
-        {result.kind !== "skill" && <Badge variant={result.kind === "error" ? "destructive" : "secondary"}>{result.kind === "error" ? "Unavailable" : "Read-only evidence"}</Badge>}
+        <Badge variant={result.kind === "error" ? "destructive" : "secondary"}>{result.kind === "error" ? "Unavailable" : "Tool result"}</Badge>
       </div>
-      {result.kind === "lookup" && (
-        result.choices.length > 0
-          ? <ul>{result.choices.map((choice) => <li key={`${choice.type}-${choice.externalId}`}>{choice.title}{choice.year ? ` (${choice.year})` : ""} · {choice.type} · ID {choice.externalId}</li>)}</ul>
-          : <p>No matching titles were returned.</p>
-      )}
-      {result.kind === "discovery" && <p>Folder: {result.rootFolder}. Quality profile: {result.qualityProfileId}{result.quality ? ` (${result.quality})` : ""}.</p>}
-      {result.kind === "status" && <dl><dt>Tracked</dt><dd>{result.tracked === null ? "Unknown" : result.tracked ? "Yes" : "No"}</dd><dt>Active download</dt><dd>{result.activeDownload === null ? "Unknown" : result.activeDownload ? "Yes" : "No"}</dd><dt>Available media</dt><dd>{result.available === null ? "Unknown" : result.available ? "Yes" : "No"}</dd></dl>}
-      {result.kind === "error" && <p>{result.message}</p>}
-      {result.kind === "skill" && <p>Instructions were loaded for the read-only lookup.</p>}
+      {result.kind === "error" ? <p>{result.message}</p> : <pre>{JSON.stringify(result, null, 2)}</pre>}
     </article>
   );
 }
@@ -243,6 +247,7 @@ export function Assistant() {
   const [sendingIds, setSendingIds] = useState<ReadonlySet<string>>(new Set());
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [conversationPendingDeletion, setConversationPendingDeletion] = useState<Conversation | null>(null);
+  const [selectedToolCall, setSelectedToolCall] = useState<ToolCallRecord | null>(null);
   const [text, setText] = useState("");
   const [optimisticMessage, setOptimisticMessage] = useState<OptimisticMessage | null>(null);
   const [settings, setSettings] = useState<AssistantSettings | null>(null);
@@ -787,6 +792,17 @@ export function Assistant() {
               </MessageScroller>
             </MessageScrollerProvider>
           )}
+          {activeConversation && activeConversation.toolCalls.length > 0 && (
+            <section className="assistant-tool-calls" aria-label="Assistant tool calls">
+              {activeConversation.toolCalls.map((toolCall) => (
+                <Button key={toolCall.id} type="button" variant="outline" className="assistant-tool-call" onClick={() => setSelectedToolCall(toolCall)}>
+                  <Wrench data-icon="inline-start" aria-hidden="true" />
+                  <span>{toolCall.name}</span>
+                  <Badge variant={toolCall.status === "error" ? "destructive" : "secondary"}>{toolCall.status === "error" ? "Failed" : "Complete"}</Badge>
+                </Button>
+              ))}
+            </section>
+          )}
           {activeConversation && activeConversation.mediaResults.length > 0 && (
             <section className="assistant-media-results" aria-label="Media evidence">
               {activeConversation.mediaResults.map((entry) => <MediaResultCard key={entry.id} entry={entry} />)}
@@ -833,6 +849,21 @@ export function Assistant() {
           </div>
         </form>
       </main>
+      <AlertDialog open={Boolean(selectedToolCall)} onOpenChange={(open) => { if (!open) setSelectedToolCall(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{selectedToolCall?.name}</AlertDialogTitle>
+            <AlertDialogDescription>Full tool call details.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="assistant-tool-call-detail">
+            <strong>Parameters</strong>
+            <pre>{JSON.stringify(selectedToolCall?.parameters ?? {}, null, 2)}</pre>
+            <strong>Result</strong>
+            <pre>{JSON.stringify(selectedToolCall?.result ?? null, null, 2)}</pre>
+          </div>
+          <AlertDialogFooter><AlertDialogCancel>Close</AlertDialogCancel></AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog
         open={Boolean(conversationPendingDeletion)}
         onOpenChange={(open) => {

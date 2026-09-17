@@ -12,6 +12,7 @@ type Detail = {
   id: string;
   messages: { id: string; role: string; text: string }[];
   mediaResults: { id: string; turnId: string; result: unknown }[];
+  toolCalls: { id: string; turnId: string; name: string; parameters: Record<string, unknown>; result: unknown; status: string }[];
   turn: null | { id: string; status: string; error: string | null };
 };
 
@@ -48,8 +49,7 @@ it("routes an authenticated movie lookup through the approved Radarr tool", asyn
   try {
     const config = await media.config();
     await server.fixture([
-      { toolCalls: [{ name: "read_skill", arguments: { service: "radarr", resource: "SKILL.md" } }] },
-      { toolCalls: [{ name: "media_lookup", arguments: { type: "movie", query: "Dune" } }] },
+      { toolCalls: [{ name: "media_find", arguments: { type: "movie", query: "Dune" } }] },
       { text: "Dune (2021) is a movie result." },
     ]);
     await server.startWorker({ VOIDSTATION_MEDIA_CONFIG_FILE: config });
@@ -67,7 +67,7 @@ it("routes an authenticated movie lookup through the approved Radarr tool", asyn
     expect(complete.mediaResults).toEqual([{
       id: expect.any(String),
       turnId: turn.id,
-      result: { kind: "lookup", choices: [{ externalId: 438631, title: "Dune", year: 2021, type: "movie" }] },
+      result: { kind: "find", choices: [{ externalId: 438631, title: "Dune", year: 2021, type: "movie" }], library: [] },
     }]);
     expect(media.requests).toContainEqual(expect.objectContaining({
       service: "radarr",
@@ -100,13 +100,13 @@ it("keeps ambiguous lookup results explicit and routes series lookups to Sonarr"
       { title: "The Expanse: Origins", year: 2017, tvdbId: 999999 },
     ]);
     const result = await runToolTurn(media, [
-      { toolCalls: [{ name: "media_lookup", arguments: { type: "series", query: "The Expanse" } }] },
+      { toolCalls: [{ name: "media_find", arguments: { type: "series", query: "The Expanse" } }] },
       { text: "Please choose one of the two series." },
     ], "Find The Expanse");
-    expect(result.conversation.mediaResults[0]?.result).toEqual({ kind: "lookup", choices: [
+    expect(result.conversation.mediaResults[0]?.result).toEqual({ kind: "find", choices: [
       { externalId: 281620, title: "The Expanse", year: 2015, type: "series" },
       { externalId: 999999, title: "The Expanse: Origins", year: 2017, type: "series" },
-    ] });
+    ], library: [] });
     expect(media.requests).toContainEqual(expect.objectContaining({ service: "sonarr", path: "/api/v3/series/lookup", query: { term: "The Expanse" } }));
     expect(media.requests.some((request) => request.service === "radarr")).toBe(false);
   } finally { await server.stopWorker(); await media.close(); }
@@ -120,13 +120,13 @@ it("reports service-backed status evidence without exposing credentials", async 
     media.setTracked("sonarr", [{ id: 22, tvdbId: 281620, statistics: { episodeFileCount: 3 } }]);
     const result = await runToolTurn(media, [
       { toolCalls: [
-        { name: "media_status", arguments: { type: "movie", externalId: 438631 } },
-        { name: "media_status", arguments: { type: "series", externalId: 281620 } },
+        { name: "media_details", arguments: { type: "movie", externalId: 438631 } },
+        { name: "media_details", arguments: { type: "series", externalId: 281620 } },
       ] },
       { text: "The movie and series have status evidence." },
     ], "What is Dune's status?");
-    expect(result.conversation.mediaResults[0]?.result).toEqual({ kind: "status", type: "movie", externalId: 438631, tracked: true, activeDownload: true, available: true });
-    expect(result.conversation.mediaResults[1]?.result).toEqual({ kind: "status", type: "series", externalId: 281620, tracked: true, activeDownload: false, available: true });
+    expect(result.conversation.mediaResults[0]?.result).toMatchObject({ kind: "details", type: "movie", externalId: 438631, tracked: true, activeDownload: true, available: true });
+    expect(result.conversation.mediaResults[1]?.result).toMatchObject({ kind: "details", type: "series", externalId: 281620, tracked: true, activeDownload: false, available: true });
     expect(JSON.stringify(result.conversation)).not.toContain(media.radarr.key);
     expect(server.output).not.toContain(media.radarr.key);
   } finally { await server.stopWorker(); await media.close(); }
@@ -141,10 +141,10 @@ it("does not attribute another title's queue item to the requested title", async
       { id: 3, movie: { id: 12 }, status: "warning" },
     ]);
     const result = await runToolTurn(media, [
-      { toolCalls: [{ name: "media_status", arguments: { type: "movie", externalId: 438631 } }] },
+      { toolCalls: [{ name: "media_details", arguments: { type: "movie", externalId: 438631 } }] },
       { text: "Dune is tracked but is not downloading." },
     ], "Is Dune downloading?");
-    expect(result.conversation.mediaResults[0]?.result).toMatchObject({ kind: "status", tracked: true, activeDownload: false, available: false });
+    expect(result.conversation.mediaResults[0]?.result).toMatchObject({ kind: "details", tracked: true, activeDownload: false, available: false });
   } finally { await server.stopWorker(); await media.close(); }
 }, 30_000);
 
@@ -152,13 +152,31 @@ it("rejects skill traversal and keeps shell metacharacters as one lookup value",
   const media = await fakeMedia();
   try {
     const result = await runToolTurn(media, [
-      { toolCalls: [{ name: "read_skill", arguments: { service: "radarr", resource: "../SKILL.md" } }] },
-      { toolCalls: [{ name: "media_lookup", arguments: { type: "movie", query: "Dune; touch /tmp/voidstation-escape" } }] },
+      { toolCalls: [{ name: "media_find", arguments: { type: "movie", query: "Dune; touch /tmp/voidstation-escape" } }] },
       { text: "No unsafe operation was performed." },
     ], "Try an unsafe lookup");
-    expect(result.conversation.mediaResults[0]?.result).toMatchObject({ kind: "error", operation: "read_skill", code: "invalid_request" });
-    expect(result.conversation.mediaResults[1]?.result).toMatchObject({ kind: "lookup" });
+    expect(result.conversation.mediaResults[0]?.result).toMatchObject({ kind: "find" });
     expect(media.requests).toContainEqual(expect.objectContaining({ query: { term: "Dune; touch /tmp/voidstation-escape" } }));
+  } finally { await server.stopWorker(); await media.close(); }
+}, 30_000);
+
+it("configures a resolved title and starts an explicit search through the shared media tools", async () => {
+  const media = await fakeMedia();
+  try {
+    media.setTracked("radarr", [{ id: 12, tmdbId: 438631, title: "Dune", path: "/media/movies/dune", monitored: false, hasFile: false }]);
+    const result = await runToolTurn(media, [
+      { toolCalls: [{ name: "media_configure", arguments: { type: "movie", externalId: 438631, quality: "4K", monitoring: "all" } }] },
+      { toolCalls: [{ name: "media_search", arguments: { type: "movie", externalId: 438631 } }] },
+      { text: "Configured the movie and accepted a search." },
+    ], "Configure and search for Dune");
+    expect(result.conversation.mediaResults[0]?.result).toMatchObject({ kind: "configure", externalId: 438631, created: false, monitored: true, qualityProfileId: 7 });
+    expect(result.conversation.mediaResults[1]?.result).toMatchObject({ kind: "search", externalId: 438631, command: "MoviesSearch", commandId: 42 });
+    expect(result.conversation.toolCalls.map(({ name, parameters, status }) => ({ name, parameters, status }))).toEqual([
+      { name: "media_configure", parameters: { type: "movie", externalId: 438631, quality: "4K", monitoring: "all" }, status: "complete" },
+      { name: "media_search", parameters: { type: "movie", externalId: 438631 }, status: "complete" },
+    ]);
+    expect(media.requests).toContainEqual(expect.objectContaining({ method: "PUT", path: "/api/v3/movie/12" }));
+    expect(media.requests).toContainEqual(expect.objectContaining({ method: "POST", path: "/api/v3/command", body: { name: "MoviesSearch", movieIds: [12] } }));
   } finally { await server.stopWorker(); await media.close(); }
 }, 30_000);
 
@@ -168,10 +186,10 @@ it("reports invalid deployment configuration without contacting either service",
     const config = await media.config();
     await writeFile(config, JSON.stringify({ radarr: {}, sonarr: {} }));
     const result = await runToolTurn(media, [
-      { toolCalls: [{ name: "media_discover", arguments: { type: "movie" } }] },
+      { toolCalls: [{ name: "media_details", arguments: { type: "movie", externalId: 438631 } }] },
       { text: "The media configuration is invalid." },
     ], "Check media defaults", config);
-    expect(result.conversation.mediaResults[0]?.result).toMatchObject({ kind: "error", operation: "discovery", code: "configuration" });
+    expect(result.conversation.mediaResults[0]?.result).toMatchObject({ kind: "error", operation: "details", code: "configuration" });
     expect(media.requests).toEqual([]);
   } finally { await server.stopWorker(); await media.close(); }
 }, 30_000);

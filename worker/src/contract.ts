@@ -29,9 +29,19 @@ export interface Message {
   model?: string;
 }
 
+export interface ToolCallRecord {
+  id: string;
+  turnId: string;
+  name: string;
+  parameters: Record<string, unknown>;
+  result: unknown;
+  status: "complete" | "error";
+}
+
 export interface ConversationDetail extends Conversation {
   messages: Message[];
   mediaResults: SavedMediaResult[];
+  toolCalls: ToolCallRecord[];
 }
 
 export interface ErrorResponse {

@@ -793,12 +793,13 @@ function validateMediaConfiguration(source) {
       "defaultQualityProfileId",
       "qualityMappings",
     ];
+    const allowed = service === "sonarr" ? [...required, "languageProfileId"] : required;
     if (
       !settings ||
       typeof settings !== "object" ||
       Array.isArray(settings) ||
-      JSON.stringify(Object.keys(settings).sort()) !==
-        JSON.stringify(required.sort())
+      Object.keys(settings).some((key) => !allowed.includes(key)) ||
+      required.some((key) => !Object.hasOwn(settings, key))
     )
       fail(`Media ${service} configuration has an invalid shape.`);
     validateMediaEndpoint(settings.endpoint, service);
@@ -829,6 +830,8 @@ function validateMediaConfiguration(source) {
       settings.defaultQualityProfileId <= 0
     )
       fail(`Media ${service} defaultQualityProfileId must be a positive integer.`);
+    if (Object.hasOwn(settings, "languageProfileId") && (!Number.isSafeInteger(settings.languageProfileId) || settings.languageProfileId <= 0))
+      fail("Media Sonarr languageProfileId must be a positive integer.");
     if (
       !settings.qualityMappings ||
       typeof settings.qualityMappings !== "object" ||
