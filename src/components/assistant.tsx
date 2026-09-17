@@ -313,9 +313,13 @@ export function Assistant() {
   const loadSettings = useCallback(async () => {
     const result = await requestJson("/api/assistant/settings", { method: "GET" }, isAssistantSettings);
     if (!result.ok) {
-      if (!redirectIfUnauthorized(result.status)) setSettingsState("unavailable");
+      if (!redirectIfUnauthorized(result.status)) {
+        setSettingsState("unavailable");
+        setSettingsError(result.error);
+      }
       return;
     }
+    setSettingsError(null);
     setSettings(result.value);
     setSettingsProvider(result.value.provider);
     setSettingsModel(result.value.model);
@@ -664,7 +668,7 @@ export function Assistant() {
               <p>Changes apply to your next message. A reply already running keeps its current model.</p>
             </div>
             {settingsState === "loading" && <p role="status">Loading provider options...</p>}
-            {settingsState === "unavailable" && <Alert variant="destructive"><CircleAlert aria-hidden="true" /><AlertDescription>Provider settings are unavailable.</AlertDescription></Alert>}
+            {settingsState === "unavailable" && <Alert variant="destructive"><CircleAlert aria-hidden="true" /><AlertTitle>Provider settings unavailable</AlertTitle><AlertDescription>{settingsError || "The Assistant worker could not return provider settings. Check that it is running the current build."}</AlertDescription></Alert>}
             {settingsState === "ready" && settings && (
               <form className="assistant-settings__form" onSubmit={saveSettings}>
                 <Field>
