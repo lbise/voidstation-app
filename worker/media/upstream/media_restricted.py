@@ -1,4 +1,4 @@
-"""Fixed, read-only JSON interface shared by the Radarr and Sonarr CLIs.
+"""Fixed, narrowly scoped JSON interface shared by the Radarr and Sonarr CLIs.
 
 This module intentionally does not expose the general CLI's URL, request, resource,
 or mutation arguments. Consumers must invoke it through ``<service>.py restricted``.
@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from datetime import datetime, timezone
 import sys
 from typing import Any, Callable
 from urllib.parse import urlsplit
@@ -318,21 +319,50 @@ def _configure(service: str, client: Any, identity: int, quality_profile_id: int
     return {"ok": True, "action": "configured", "service": service, "created": created, "id": identity, "title": _text(result.get("title")) if isinstance(result, dict) else None, "monitored": payload["monitored"], "qualityProfileId": quality_profile_id}
 
 
-def _search(service: str, client: Any, identity: int, season: int | None) -> dict[str, Any]:
+def _search(service: str, client: Any, identity: int, monitoring: str | None, seasons: list[int]) -> dict[str, Any]:
     found = _find_library_item(service, client, identity)
     if found is None or _positive_integer(found.get("id")) is None:
         raise ValueError("input")
     library_id = _positive_integer(found["id"])
     if service == "radarr":
-        payload = {"name": "MoviesSearch", "movieIds": [library_id]}
-    elif season is None:
-        payload = {"name": "SeriesSearch", "seriesId": library_id}
-    else:
-        if season < 0:
+        if monitoring is not None or seasons:
             raise ValueError("input")
-        payload = {"name": "SeasonSearch", "seriesId": library_id, "seasonNumber": season}
+        payload = {"name": "MoviesSearch", "movieIds": [library_id]}
+        result = client.request("POST", "/command", payload=payload)
+        return {"ok": True, "action": "search", "service": service, "id": identity, "season": None, "commandId": _positive_integer(result.get("id")) if isinstance(result, dict) else None, "command": payload["name"]}
+    if monitoring is None or monitoring == "none" or (monitoring == "seasons" and not seasons) or (monitoring != "seasons" and seasons):
+        raise ValueError("input")
+    if monitoring == "all":
+        payload = {"name": "SeriesSearch", "seriesId": library_id}
+        result = client.request("POST", "/command", payload=payload)
+        return {"ok": True, "action": "search", "service": service, "id": identity, "season": None, "monitoring": monitoring, "commandId": _positive_integer(result.get("id")) if isinstance(result, dict) else None, "command": payload["name"]}
+    episodes = _items(client.request("GET", "/episode", params={"seriesId": library_id, "includeEpisodeFile": True}))
+    selected = set(seasons)
+    now = datetime.now(timezone.utc)
+    episode_ids: list[int] = []
+    for episode in episodes:
+        episode_id = _positive_integer(episode.get("id"))
+        season_number = _integer(episode.get("seasonNumber"))
+        if episode_id is None or season_number is None or (monitoring == "seasons" and season_number not in selected):
+            continue
+        if episode.get("hasFile") is True or episode.get("monitored") is False:
+            continue
+        if monitoring == "future":
+            air_date = episode.get("airDateUtc")
+            try:
+                parsed = datetime.fromisoformat(air_date.replace("Z", "+00:00")) if isinstance(air_date, str) else None
+            except ValueError:
+                parsed = None
+            if parsed is not None and parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            if parsed is None or parsed <= now:
+                continue
+        episode_ids.append(episode_id)
+    if not episode_ids:
+        return {"ok": True, "action": "search", "service": service, "id": identity, "season": None, "monitoring": monitoring, "commandId": None, "command": "EpisodeSearch", "episodeCount": 0}
+    payload = {"name": "EpisodeSearch", "episodeIds": episode_ids[:1000]}
     result = client.request("POST", "/command", payload=payload)
-    return {"ok": True, "action": "search", "service": service, "id": identity, "season": season, "commandId": _positive_integer(result.get("id")) if isinstance(result, dict) else None, "command": payload["name"]}
+    return {"ok": True, "action": "search", "service": service, "id": identity, "season": None, "monitoring": monitoring, "commandId": _positive_integer(result.get("id")) if isinstance(result, dict) else None, "command": payload["name"], "episodeCount": len(payload["episodeIds"])}
 
 
 def run(
@@ -340,7 +370,7 @@ def run(
 ) -> int:
     parser = argparse.ArgumentParser(
         prog=f"{service}.py restricted",
-        description="Fixed read-only JSON interface for a configured media service.",
+        description="Fixed JSON interface for a configured media service.",
     )
     commands = parser.add_subparsers(dest="action", required=True)
     lookup = commands.add_parser("lookup")
@@ -360,7 +390,8 @@ def run(
     configure.add_argument("--language-profile-id", type=int)
     search = commands.add_parser("search")
     search.add_argument("--id", type=int, required=True)
-    search.add_argument("--season", type=int)
+    search.add_argument("--monitoring", choices=["all", "future", "none", "seasons"])
+    search.add_argument("--seasons")
     commands.add_parser("configuration")
     status = commands.add_parser("status")
     status.add_argument("--id", type=int, required=True)
@@ -380,7 +411,7 @@ def run(
         elif args.action == "configure":
             payload = _configure(service, client, args.id, args.quality_profile_id, args.root_folder, args.monitoring, _validate_seasons(args.seasons), args.language_profile_id)
         elif args.action == "search":
-            payload = _search(service, client, args.id, args.season)
+            payload = _search(service, client, args.id, args.monitoring, _validate_seasons(args.seasons))
         elif args.action == "configuration":
             payload = _configuration(service, client)
         else:

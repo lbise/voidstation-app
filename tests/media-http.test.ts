@@ -180,6 +180,35 @@ it("configures a resolved title and starts an explicit search through the shared
   } finally { await server.stopWorker(); await media.close(); }
 }, 30_000);
 
+it("keeps series searches inside explicit season and future scopes", async () => {
+  const media = await fakeMedia();
+  try {
+    media.setTracked("sonarr", [{ id: 22, tvdbId: 281620, title: "The Expanse" }]);
+    media.setEpisodes("sonarr", [
+      { id: 101, seasonNumber: 1, episodeNumber: 1, monitored: true, hasFile: false, airDateUtc: "2020-01-01T00:00:00Z" },
+      { id: 102, seasonNumber: 2, episodeNumber: 1, monitored: true, hasFile: false, airDateUtc: "2999-01-01T00:00:00Z" },
+      { id: 103, seasonNumber: 1, episodeNumber: 2, monitored: true, hasFile: true, airDateUtc: "2999-01-01T00:00:00Z" },
+      { id: 104, seasonNumber: 3, episodeNumber: 1, monitored: false, hasFile: false, airDateUtc: "2999-01-01T00:00:00Z" },
+    ]);
+    const result = await runToolTurn(media, [
+      { toolCalls: [
+        { name: "media_search", arguments: { type: "series", externalId: 281620 } },
+        { name: "media_search", arguments: { type: "series", externalId: 281620, monitoring: "seasons", seasons: [1] } },
+        { name: "media_search", arguments: { type: "series", externalId: 281620, monitoring: "future" } },
+      ] },
+      { text: "Searches stayed within their declared scopes." },
+    ], "Search the series safely");
+    expect(result.conversation.mediaResults.map(({ result: value }) => value)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "error", operation: "search", code: "invalid_request" }),
+      expect.objectContaining({ kind: "search", monitoring: "seasons", seasons: [1], command: "EpisodeSearch", episodeCount: 1 }),
+      expect.objectContaining({ kind: "search", monitoring: "future", command: "EpisodeSearch", episodeCount: 1 }),
+    ]));
+    expect(media.requests).toContainEqual(expect.objectContaining({ method: "POST", path: "/api/v3/command", body: { name: "EpisodeSearch", episodeIds: [101] } }));
+    expect(media.requests).toContainEqual(expect.objectContaining({ method: "POST", path: "/api/v3/command", body: { name: "EpisodeSearch", episodeIds: [102] } }));
+    expect(media.requests.some(({ method, path, body }) => method === "POST" && path === "/api/v3/command" && (body as { name?: string }).name === "SeriesSearch")).toBe(false);
+  } finally { await server.stopWorker(); await media.close(); }
+}, 30_000);
+
 it("rejects season-only inputs for movies", async () => {
   const media = await fakeMedia();
   try {

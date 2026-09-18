@@ -6,10 +6,10 @@
 |---|---|---|
 | `media_find` | `{ type, query?, missing? }` | Resolve an external title or browse the managed library. |
 | `media_details` | `{ type, externalId, season? }` | Report tracking, monitoring, downloads, availability, and series episodes. |
-| `media_configure` | `{ type, externalId, quality?, monitoring?, seasons? }` | Add a resolved title or update monitoring and quality. It never starts a search. |
-| `media_search` | `{ type, externalId, season? }` | Start a Radarr or Sonarr search. An accepted command is not evidence that a download started. |
+| `media_configure` | `{ type, externalId, quality?, monitoring?, seasons? }` | Add a resolved title or update monitoring and quality. Series requests must declare `all`, `future`, `none`, or named `seasons`. It never starts a search. |
+| `media_search` | `{ type, externalId, monitoring?, seasons? }` | Start a scoped Radarr or Sonarr search. Series searches must declare `all`, `future`, or named `seasons`; an accepted command is not evidence that a download started. |
 
-`media_find` never silently chooses between lookup candidates. The Assistant must present the title, year, type, and external ID and ask the owner which result they mean. `media_configure` accepts only configured quality names and monitoring modes. `media_search` accepts only a resolved, managed title. Movies reject season arguments.
+`media_find` never silently chooses between lookup candidates. The Assistant must present the title, year, type, and external ID and ask the owner which result they mean. `media_configure` accepts only configured quality names and monitoring modes, and series configuration cannot omit monitoring scope. `media_search` accepts only a resolved, managed title. Movies reject season arguments. Series searches use `SeriesSearch` only for explicit `all`; future and named-season searches resolve bounded Sonarr episode IDs and use `EpisodeSearch`.
 
 The executor reads `VOIDSTATION_MEDIA_CONFIG_FILE`. Each service includes `endpoint`, `keyFile`, `rootFolder`, `defaultQualityProfileId`, and `qualityMappings`. A Sonarr service may also include `languageProfileId`, which is required to add a new series. The selected service API key is read from its key file and injected only into that Python child environment. It is never passed in argv, included in a result, or logged.
 

@@ -346,7 +346,9 @@ export function createMediaTools(onResult: (result: MediaResult) => void): ToolD
     async execute(_id, params, signal) {
       try {
         if (params.type === "movie" && (params.monitoring === "seasons" || params.seasons !== undefined)) throw new MediaToolError("invalid_request", "Movies do not have seasons.");
+        if (params.type === "series" && params.monitoring === undefined) throw new MediaToolError("invalid_request", "Choose a monitoring scope for a series: all, future, none, or named seasons.");
         if (params.monitoring === "seasons" && !params.seasons?.length) throw new MediaToolError("invalid_request", "Choose at least one season when monitoring is set to seasons.");
+        if (params.monitoring !== "seasons" && params.seasons !== undefined) throw new MediaToolError("invalid_request", "Only named-season monitoring accepts seasons.");
         if (params.seasons && new Set(params.seasons).size !== params.seasons.length) throw new MediaToolError("invalid_request", "Each season may appear only once.");
         const config = await loadConfig();
         const service = mediaService(params.type);
@@ -358,7 +360,7 @@ export function createMediaTools(onResult: (result: MediaResult) => void): ToolD
         const args = ["restricted", "configure", "--id", String(params.externalId), "--quality-profile-id", String(quality.id), "--root-folder", serviceConfig.rootFolder, "--monitoring", monitoring, ...(params.seasons ? ["--seasons", params.seasons.join(",")] : []), ...(params.type === "series" && serviceConfig.languageProfileId ? ["--language-profile-id", String(serviceConfig.languageProfileId)] : [])];
         const output = restrictedPayload(await runPython(service, serviceConfig, args, signal));
         if (typeof output.created !== "boolean" || typeof output.monitored !== "boolean" || typeof output.qualityProfileId !== "number" || !Number.isSafeInteger(output.qualityProfileId)) throw new ProcessError("invalid_response");
-        return report({ kind: "configure", type: params.type, externalId: params.externalId, created: output.created, monitored: output.monitored, qualityProfileId: output.qualityProfileId, ...(typeof output.title === "string" ? { title: output.title } : {}) });
+        return report({ kind: "configure", type: params.type, externalId: params.externalId, created: output.created, monitored: output.monitored, monitoring, ...(params.seasons ? { seasons: params.seasons } : {}), qualityProfileId: output.qualityProfileId, ...(typeof output.title === "string" ? { title: output.title } : {}) });
       } catch (error) {
         return report(mediaFailure("configure", error));
       }
@@ -368,20 +370,29 @@ export function createMediaTools(onResult: (result: MediaResult) => void): ToolD
   const search = defineTool({
     name: "media_search",
     label: "Search for media",
-    description: "Start a download search for one managed title. For a series, optionally search one season. Starting a search does not prove that a download has begun.",
+    description: "Start a download search for one managed title. Series searches must declare all, future, or named-season scope. Starting a search does not prove that a download has begun.",
     parameters: Type.Object({
       type: StringEnum(["movie", "series"] as const),
       externalId: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
       season: Type.Optional(Type.Integer({ minimum: 0, maximum: 1000 })),
+      monitoring: Type.Optional(StringEnum(["all", "future", "none", "seasons"] as const)),
+      seasons: Type.Optional(Type.Array(Type.Integer({ minimum: 0, maximum: 1000 }), { minItems: 1, maxItems: 100 })),
     }, { additionalProperties: false }),
     executionMode: "sequential",
     async execute(_id, params, signal) {
       try {
-        if (params.type === "movie" && params.season !== undefined) throw new MediaToolError("invalid_request", "Movies do not have seasons.");
+        if (params.type === "movie" && (params.season !== undefined || params.monitoring !== undefined || params.seasons !== undefined)) throw new MediaToolError("invalid_request", "Movies do not have series search scope.");
+        if (params.type === "series" && params.monitoring === undefined) throw new MediaToolError("invalid_request", "Choose a monitoring scope before searching a series.");
+        if (params.type === "series" && params.monitoring === "none") throw new MediaToolError("invalid_request", "A series must have a monitored scope before searching.");
+        if (params.type === "series" && params.season !== undefined) throw new MediaToolError("invalid_request", "Use monitoring seasons with a seasons list for a series search.");
+        if (params.monitoring === "seasons" && !params.seasons?.length) throw new MediaToolError("invalid_request", "Choose at least one season when searching named seasons.");
+        if (params.monitoring !== "seasons" && params.seasons !== undefined) throw new MediaToolError("invalid_request", "Only named-season searches accept seasons.");
+        if (params.seasons && new Set(params.seasons).size !== params.seasons.length) throw new MediaToolError("invalid_request", "Each season may appear only once.");
         const config = await loadConfig();
-        const output = restrictedPayload(await runPython(mediaService(params.type), config[mediaService(params.type)], ["restricted", "search", "--id", String(params.externalId), ...(params.season === undefined ? [] : ["--season", String(params.season)])], signal));
-        if (typeof output.command !== "string" || (output.commandId !== null && (typeof output.commandId !== "number" || !Number.isSafeInteger(output.commandId)))) throw new ProcessError("invalid_response");
-        return report({ kind: "search", type: params.type, externalId: params.externalId, season: params.season ?? null, command: output.command, commandId: output.commandId });
+        const args = ["restricted", "search", "--id", String(params.externalId), ...(params.monitoring ? ["--monitoring", params.monitoring] : []), ...(params.seasons ? ["--seasons", params.seasons.join(",")] : [])];
+        const output = restrictedPayload(await runPython(mediaService(params.type), config[mediaService(params.type)], args, signal));
+        if (typeof output.command !== "string" || (output.commandId !== null && (typeof output.commandId !== "number" || !Number.isSafeInteger(output.commandId))) || (output.episodeCount !== undefined && (typeof output.episodeCount !== "number" || !Number.isSafeInteger(output.episodeCount) || output.episodeCount < 0))) throw new ProcessError("invalid_response");
+        return report({ kind: "search", type: params.type, externalId: params.externalId, season: null, ...(params.monitoring ? { monitoring: params.monitoring } : {}), ...(params.seasons ? { seasons: params.seasons } : {}), command: output.command, commandId: output.commandId, ...(typeof output.episodeCount === "number" ? { episodeCount: output.episodeCount } : {}) });
       } catch (error) {
         return report(mediaFailure("search", error));
       }

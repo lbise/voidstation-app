@@ -12,8 +12,8 @@ SOURCES = (
     ("sonarr/SKILL.md", "dot/.agents/skills-catalog/sonarr/SKILL.md", SKILLS),
     ("radarr.py", "scripts/radarr.py", UPSTREAM),
     ("sonarr.py", "scripts/sonarr.py", UPSTREAM),
-    ("media_restricted.py", "scripts/media_restricted.py", UPSTREAM),
 )
+APP_OWNED_RESTRICTED = "media_restricted.py"
 
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -40,39 +40,6 @@ def entries(root: Path) -> tuple[str, list[dict[str, str]]]:
     return rev, result
 
 def apply_portability_patches(staged: Path, files: list[dict[str, str]]) -> None:
-    # Keep the shared CLI unchanged while exposing Sonarr's series-level file
-    # statistics through the fixed worker status projection.
-    path = staged / "media/upstream/media_restricted.py"
-    source = path.read_text()
-    old = '    return status\n\n\ndef run(\n'
-    new = '''    if service == "sonarr" and "hasFile" not in status:
-        statistics = found.get("statistics")
-        episode_files = statistics.get("episodeFileCount") if isinstance(statistics, dict) else None
-        if isinstance(episode_files, (int, float)) and not isinstance(episode_files, bool) and episode_files >= 0:
-            status["hasFile"] = episode_files > 0
-    return status
-
-
-def run(
-'''
-    if old not in source or source.count(old) != 1: raise ValueError("shared media source portability patch no longer applies")
-    source = source.replace(old, new)
-    language_old = '''    if service == "sonarr":
-        languages = _items(client.request("GET", "/languageprofile"))
-        result["languageProfiles"] = [
-            {"id": identity, "name": name}
-            for item in languages[:MAX_RESULTS]
-            if (identity := _positive_integer(item.get("id"))) is not None
-            and (name := _text(item.get("name"))) is not None
-        ]
-'''
-    if language_old not in source or source.count(language_old) != 1: raise ValueError("shared language profile patch no longer applies")
-    source = source.replace(language_old, "")
-    queue_old = '        params={"page": 1, "pageSize": 100, f"include{resource.title()}": True},'
-    queue_new = '        params={"page": 1, "pageSize": 1000, f"include{resource.title()}": True},'
-    if queue_old not in source or source.count(queue_old) != 1: raise ValueError("shared queue pagination patch no longer applies")
-    source = source.replace(queue_old, queue_new).replace("for item in _items(raw_records)[:100]:", "for item in _items(raw_records)[:1000]:")
-    path.write_text(source)
     for adapter in ("radarr.py", "sonarr.py"):
         adapter_path = staged / "media/upstream" / adapter
         adapter_source = adapter_path.read_text()
@@ -112,17 +79,46 @@ def run(
         adapter_path.write_text(adapter_source.replace(body_old, body_new))
         for entry in files:
             if entry["path"] == adapter: entry["sha256"] = digest(adapter_path)
-    for entry in files:
-        if entry["path"] == "media_restricted.py": entry["sha256"] = digest(path)
+    skill_commands = {
+        "radarr/SKILL.md": [
+            "* `radarr.py restricted find [--term <term>] [--missing]`",
+            "* `radarr.py restricted details --id <radarr-id>`",
+            "* `radarr.py restricted configure --id <radarr-id> --quality-profile-id <id> --root-folder <path> --monitoring <mode>`",
+            "* `radarr.py restricted search --id <radarr-id>`",
+        ],
+        "sonarr/SKILL.md": [
+            "* `sonarr.py restricted find [--term <term>] [--missing]`",
+            "* `sonarr.py restricted details --id <sonarr-id>`",
+            "* `sonarr.py restricted configure --id <sonarr-id> --quality-profile-id <id> --root-folder <path> --monitoring <mode> --language-profile-id <id>`",
+            "* `sonarr.py restricted search --id <sonarr-id>`",
+        ],
+    }
+    for relative, commands in skill_commands.items():
+        path = staged / "skills" / relative
+        source = path.read_text()
+        source = source.replace("Packaged consumers that need read-only media data must use the companion script's fixed JSON interface, not the general commands above:", "Packaged consumers must use the companion script's fixed, narrowly scoped JSON interface, not the general commands above:")
+        marker = commands[0]
+        if marker not in source:
+            status = next(line for line in source.splitlines() if "restricted status --id" in line)
+            source = source.replace(status, status + "\n" + "\n".join(commands))
+        service = "RADARR" if relative.startswith("radarr/") else "SONARR"
+        source = source.replace(f"It takes the service URL and credential only from `{service}_URL` and `{service}_API_KEY`, accepts no URL or request-path override, never follows redirects, and writes one sanitized JSON result to stdout. It does not authorize mutations.", f"It takes the service URL and credential only from `{service}_URL` and `{service}_API_KEY`, accepts no URL or request-path override, never follows redirects, and writes one sanitized JSON result to stdout. The restricted configure and search commands are the only allowed mutation and command-dispatch operations.")
+        path.write_text(source)
+        for entry in files:
+            if entry["path"] == relative: entry["sha256"] = digest(path)
 
 def update(root: Path) -> None:
     rev, files = entries(root)
+    app_path = UPSTREAM / APP_OWNED_RESTRICTED
+    if not app_path.is_file(): raise ValueError(f"missing app-owned source: {app_path}")
+    files.append({"path": APP_OWNED_RESTRICTED, "sourcePath": str(app_path.relative_to(ROOT)), "sha256": digest(app_path)})
     with tempfile.TemporaryDirectory(dir=ROOT / "worker") as directory:
         staged = Path(directory)
         for entry in files:
             destination = staged / ("skills" if entry["path"].endswith("SKILL.md") else "media/upstream") / (entry["path"] if entry["path"].endswith("SKILL.md") else Path(entry["path"]).name)
             destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(root / entry["sourcePath"], destination)
+            source = app_path if entry["path"] == APP_OWNED_RESTRICTED else root / entry["sourcePath"]
+            shutil.copyfile(source, destination)
         apply_portability_patches(staged, files)
         (staged / "skills" / "manifest.json").write_text(json.dumps({"schemaVersion": 1, "source": {"repository": "dotfiles", "revision": rev}, "files": [entry for entry in files if entry["path"].endswith("SKILL.md")]}, indent=2) + "\n")
         (staged / "media").mkdir(exist_ok=True)

@@ -85,7 +85,7 @@ Packaged consumers must use the companion script's fixed, narrowly scoped JSON i
 * `radarr.py restricted configure --id <radarr-id> --quality-profile-id <id> --root-folder <path> --monitoring <mode>`
 * `radarr.py restricted search --id <radarr-id>`
 
-It takes the service URL and credential only from `RADARR_URL` and `RADARR_API_KEY`, accepts no URL or request-path override, never follows redirects, and writes one sanitized JSON result to stdout. The restricted configure and search commands are the only allowed mutations and command dispatches.
+It takes the service URL and credential only from `RADARR_URL` and `RADARR_API_KEY`, accepts no URL or request-path override, never follows redirects, and writes one sanitized JSON result to stdout. The restricted configure and search commands are the only allowed mutation and command-dispatch operations.
 
 ## Notes
 

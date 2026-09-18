@@ -87,7 +87,7 @@ Packaged consumers must use the companion script's fixed, narrowly scoped JSON i
 * `sonarr.py restricted configure --id <sonarr-id> --quality-profile-id <id> --root-folder <path> --monitoring <mode> --language-profile-id <id>`
 * `sonarr.py restricted search --id <sonarr-id>`
 
-It takes the service URL and credential only from `SONARR_URL` and `SONARR_API_KEY`, accepts no URL or request-path override, never follows redirects, and writes one sanitized JSON result to stdout. The restricted configure and search commands are the only allowed mutations and command dispatches.
+It takes the service URL and credential only from `SONARR_URL` and `SONARR_API_KEY`, accepts no URL or request-path override, never follows redirects, and writes one sanitized JSON result to stdout. The restricted configure and search commands are the only allowed mutation and command-dispatch operations.
 
 ## Notes
 

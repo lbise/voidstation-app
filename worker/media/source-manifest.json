@@ -17,8 +17,8 @@
     },
     {
       "path": "media_restricted.py",
-      "sourcePath": "scripts/media_restricted.py",
-      "sha256": "36519ddc704719a478a77f05503265b648811fc0274c27d82816edea7491f221"
+      "sourcePath": "worker/media/upstream/media_restricted.py",
+      "sha256": "2c0685437e256ca0e3c8e2d08f1b840b688be755b11076c9cbfc2a109d23ac1d"
     }
   ]
 }
