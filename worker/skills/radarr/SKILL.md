@@ -75,13 +75,17 @@ Mutating commands require explicit confirmation:
 
 ## Restricted interface
 
-Packaged consumers that need read-only media data must use the companion script's fixed JSON interface, not the general commands above:
+Packaged consumers must use the companion script's fixed, narrowly scoped JSON interface, not the general commands above:
 
 * `radarr.py restricted lookup --term <term>`
 * `radarr.py restricted configuration`
 * `radarr.py restricted status --id <tmdb-id>`
+* `radarr.py restricted find [--term <term>] [--missing]`
+* `radarr.py restricted details --id <radarr-id>`
+* `radarr.py restricted configure --id <radarr-id> --quality-profile-id <id> --root-folder <path> --monitoring <mode>`
+* `radarr.py restricted search --id <radarr-id>`
 
-It takes the service URL and credential only from `RADARR_URL` and `RADARR_API_KEY`, accepts no URL or request-path override, never follows redirects, and writes one sanitized JSON result to stdout. It does not authorize mutations.
+It takes the service URL and credential only from `RADARR_URL` and `RADARR_API_KEY`, accepts no URL or request-path override, never follows redirects, and writes one sanitized JSON result to stdout. The restricted configure and search commands are the only allowed mutations and command dispatches.
 
 ## Notes
 

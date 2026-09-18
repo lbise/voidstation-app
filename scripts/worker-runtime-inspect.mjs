@@ -194,7 +194,7 @@ function requireFixtureTurnIsolation(image, fixture) {
     }
     if (captures.length === 0) fail("The deterministic fixture did not capture a real Pi model context.");
     const capture = captures.at(-1);
-    const expectedTools = ["read_skill", "media_lookup", "media_discover", "media_status"];
+    const expectedTools = ["media_find", "media_details", "media_configure", "media_search"];
     if (JSON.stringify(capture.tools) !== JSON.stringify(expectedTools)) fail("The real Pi model context exposed an unexpected tool set.");
     if (typeof capture.systemPrompt !== "string") fail("The model capture omitted its system prompt.");
     const serialized = JSON.stringify(capture);

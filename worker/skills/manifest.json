@@ -8,12 +8,12 @@
     {
       "path": "radarr/SKILL.md",
       "sourcePath": "dot/.agents/skills-catalog/radarr/SKILL.md",
-      "sha256": "961d1788f4419d87feb9b5b4a80c3b7c84b68f4bdbf32da0db5f1f45decc0697"
+      "sha256": "d6b4978210e5432f4bc34f4a096f01ee9229cc3eb5e2a9618dbe2c040e4ffbda"
     },
     {
       "path": "sonarr/SKILL.md",
       "sourcePath": "dot/.agents/skills-catalog/sonarr/SKILL.md",
-      "sha256": "008004298ffcab7cd3e9e824efcd22367a404f63db3fe1527af0b6d7097d9347"
+      "sha256": "e7ce40e6fec31ef9cac19a68f89f0e85d5a48c1c535b446183512045189f4989"
     }
   ]
 }

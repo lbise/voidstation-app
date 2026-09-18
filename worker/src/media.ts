@@ -274,7 +274,7 @@ function mediaFailure(operation: MediaOperation, error: unknown, status?: MediaS
 export function createMediaTools(onResult: (result: MediaResult) => void): ToolDefinition[] {
   const report = (result: MediaResult) => {
     try { onResult(result); } catch { /* Result persistence must not expose or replace a safe tool result. */ }
-    return { content: [{ type: "text" as const, text: resultText(result) }], details: { result } };
+    return { content: [{ type: "text" as const, text: resultText(result) }], details: { result }, ...(result.kind === "error" ? { isError: true } : {}) };
   };
 
   const find = defineTool({
@@ -319,6 +319,7 @@ export function createMediaTools(onResult: (result: MediaResult) => void): ToolD
     async execute(_id, params, signal) {
       const unknown: MediaStatus = { type: params.type, externalId: params.externalId, tracked: null, activeDownload: null, available: null };
       try {
+        if (params.type === "movie" && params.season !== undefined) throw new MediaToolError("invalid_request", "Movies do not have seasons.");
         const config = await loadConfig();
         const output = restrictedPayload(await runPython(mediaService(params.type), config[mediaService(params.type)], ["restricted", "details", "--id", String(params.externalId), ...(params.season === undefined ? [] : ["--season", String(params.season)])], signal));
         if (typeof output.tracked !== "boolean" || !Array.isArray(output.activeDownloads)) throw new ProcessError("invalid_response");
@@ -344,12 +345,15 @@ export function createMediaTools(onResult: (result: MediaResult) => void): ToolD
     executionMode: "sequential",
     async execute(_id, params, signal) {
       try {
+        if (params.type === "movie" && (params.monitoring === "seasons" || params.seasons !== undefined)) throw new MediaToolError("invalid_request", "Movies do not have seasons.");
         if (params.monitoring === "seasons" && !params.seasons?.length) throw new MediaToolError("invalid_request", "Choose at least one season when monitoring is set to seasons.");
         if (params.seasons && new Set(params.seasons).size !== params.seasons.length) throw new MediaToolError("invalid_request", "Each season may appear only once.");
         const config = await loadConfig();
         const service = mediaService(params.type);
         const serviceConfig = config[service];
         const quality = configuredQuality(serviceConfig, params.quality);
+        const configuration = restrictedPayload(await runPython(service, serviceConfig, ["restricted", "configuration"], signal));
+        findProfileAndFolder(configuration, { ...serviceConfig, defaultQualityProfileId: quality.id });
         const monitoring: MonitoringMode = params.monitoring ?? "all";
         const args = ["restricted", "configure", "--id", String(params.externalId), "--quality-profile-id", String(quality.id), "--root-folder", serviceConfig.rootFolder, "--monitoring", monitoring, ...(params.seasons ? ["--seasons", params.seasons.join(",")] : []), ...(params.type === "series" && serviceConfig.languageProfileId ? ["--language-profile-id", String(serviceConfig.languageProfileId)] : [])];
         const output = restrictedPayload(await runPython(service, serviceConfig, args, signal));

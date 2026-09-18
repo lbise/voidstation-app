@@ -57,7 +57,7 @@ The worker token is a file with at least 32 non-whitespace characters, not an en
 
 ### Media service configuration
 
-The Assistant only performs read-only title lookup, configured-resource discovery, and status checks. It does not add, update, delete, search, or change Radarr/Sonarr configuration. Create the worker-only directory with mode `0700`, owned by UID/GID 1000:
+The Assistant can find titles, inspect the Managed library, configure monitoring and quality, and start explicit download searches. It does not delete titles or expose arbitrary Radarr/Sonarr API requests. Create the worker-only directory with mode `0700`, owned by UID/GID 1000:
 
 ```sh
 sudo install -d -o 1000 -g 1000 -m 0700 /var/lib/voidstation/media

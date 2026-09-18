@@ -77,13 +77,17 @@ Mutating commands require explicit confirmation:
 
 ## Restricted interface
 
-Packaged consumers that need read-only media data must use the companion script's fixed JSON interface, not the general commands above:
+Packaged consumers must use the companion script's fixed, narrowly scoped JSON interface, not the general commands above:
 
 * `sonarr.py restricted lookup --term <term>`
 * `sonarr.py restricted configuration`
 * `sonarr.py restricted status --id <tvdb-id>`
+* `sonarr.py restricted find [--term <term>] [--missing]`
+* `sonarr.py restricted details --id <sonarr-id>`
+* `sonarr.py restricted configure --id <sonarr-id> --quality-profile-id <id> --root-folder <path> --monitoring <mode> --language-profile-id <id>`
+* `sonarr.py restricted search --id <sonarr-id>`
 
-It takes the service URL and credential only from `SONARR_URL` and `SONARR_API_KEY`, accepts no URL or request-path override, never follows redirects, and writes one sanitized JSON result to stdout. It does not authorize mutations.
+It takes the service URL and credential only from `SONARR_URL` and `SONARR_API_KEY`, accepts no URL or request-path override, never follows redirects, and writes one sanitized JSON result to stdout. The restricted configure and search commands are the only allowed mutations and command dispatches.
 
 ## Notes
 

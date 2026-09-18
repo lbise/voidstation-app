@@ -180,6 +180,24 @@ it("configures a resolved title and starts an explicit search through the shared
   } finally { await server.stopWorker(); await media.close(); }
 }, 30_000);
 
+it("rejects season-only inputs for movies", async () => {
+  const media = await fakeMedia();
+  try {
+    const result = await runToolTurn(media, [
+      { toolCalls: [
+        { name: "media_details", arguments: { type: "movie", externalId: 438631, season: 1 } },
+        { name: "media_configure", arguments: { type: "movie", externalId: 438631, monitoring: "seasons", seasons: [1] } },
+      ] },
+      { text: "Movies do not support season operations." },
+    ], "Use seasons for a movie");
+    expect(result.conversation.mediaResults.map(({ result: value }) => value)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "error", operation: "details", code: "invalid_request", message: "Movies do not have seasons." }),
+      expect.objectContaining({ kind: "error", operation: "configure", code: "invalid_request", message: "Movies do not have seasons." }),
+    ]));
+    expect(media.requests).toEqual([]);
+  } finally { await server.stopWorker(); await media.close(); }
+}, 30_000);
+
 it("reports invalid deployment configuration without contacting either service", async () => {
   const media = await fakeMedia();
   try {
@@ -190,6 +208,7 @@ it("reports invalid deployment configuration without contacting either service",
       { text: "The media configuration is invalid." },
     ], "Check media defaults", config);
     expect(result.conversation.mediaResults[0]?.result).toMatchObject({ kind: "error", operation: "details", code: "configuration" });
+    expect(result.conversation.toolCalls[0]).toMatchObject({ name: "media_details", status: "error" });
     expect(media.requests).toEqual([]);
   } finally { await server.stopWorker(); await media.close(); }
 }, 30_000);

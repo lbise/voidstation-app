@@ -259,6 +259,7 @@ class Worker {
       }, this.config.shutdownTimeoutMs);
     }, this.config.turnTimeoutMs);
     let unsubscribe: (() => void) | undefined;
+    let messageStart = 0;
     try {
       const transcriptPath = this.store.getTranscriptPath(task.conversationId);
       const model = this.modelFor({ provider: task.provider, model: task.model });
@@ -288,7 +289,7 @@ class Worker {
         await task.session.abort();
         return;
       }
-      const messageStart = task.session.messages.length;
+      messageStart = task.session.messages.length;
       await task.session.prompt(text);
       this.store.saveToolCalls(task.conversationId, task.turnId, extractToolCalls(task.session, task.turnId, messageStart));
       this.emit(task.conversationId);
@@ -306,6 +307,7 @@ class Worker {
         this.settle(task, "complete", null, assistantText(task.session), task.live.id);
       }
     } catch (error) {
+      if (task.session) this.store.saveToolCalls(task.conversationId, task.turnId, extractToolCalls(task.session, task.turnId, messageStart));
       if (!task.settled) {
         const failure = providerFailure(error, task.provider);
         this.setGate(task.provider, failure.kind, failure.message);
@@ -364,7 +366,7 @@ function extractToolCalls(session: AgentSession, turnId: string, startIndex: num
         try { result = JSON.parse(result) as unknown; } catch { /* Keep bounded text if a tool returned non-JSON text. */ }
       }
       call.result = result;
-      call.status = record.isError === true ? "error" : "complete";
+      call.status = record.isError === true || (isRecord(result) && result.kind === "error") ? "error" : "complete";
     }
   }
   return [...calls.values()];

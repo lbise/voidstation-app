@@ -734,7 +734,7 @@ export function Assistant() {
               <EmptyMedia variant="icon"><Bot aria-hidden="true" /></EmptyMedia>
               <EmptyHeader>
                 <EmptyTitle>Start a conversation</EmptyTitle>
-                <EmptyDescription>This Assistant can identify media and report read-only service status.</EmptyDescription>
+                <EmptyDescription>This Assistant can find and manage movies and series through Radarr and Sonarr.</EmptyDescription>
               </EmptyHeader>
               <Button type="button" onClick={createConversation} disabled={isCreating}>
                 <MessageSquarePlus data-icon="inline-start" aria-hidden="true" />
@@ -752,7 +752,7 @@ export function Assistant() {
               <EmptyMedia variant="icon"><Bot aria-hidden="true" /></EmptyMedia>
               <EmptyHeader>
                 <EmptyTitle>How can I help?</EmptyTitle>
-                <EmptyDescription>This Assistant can identify media and report read-only service status.</EmptyDescription>
+                <EmptyDescription>This Assistant can find and manage movies and series through Radarr and Sonarr.</EmptyDescription>
               </EmptyHeader>
             </Empty>
           )}
@@ -841,7 +841,7 @@ export function Assistant() {
             </Field>
           </FieldGroup>
           <div className="assistant-composer__actions">
-            <p aria-live="polite">{isRunning ? "The Assistant is working. New messages are unavailable." : "Read-only media lookup and status only. No changes are made to your services."}</p>
+            <p aria-live="polite">{isRunning ? "The Assistant is working. New messages are unavailable." : "Media changes and searches are available when you ask for them."}</p>
             <Button type="submit" disabled={composerDisabled || !text.trim()}>
               <SendHorizontal data-icon="inline-start" aria-hidden="true" />
               Send
