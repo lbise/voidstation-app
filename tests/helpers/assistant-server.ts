@@ -203,7 +203,6 @@ export async function assistantServer() {
           VOIDSTATION_WORKER_PORT: String(workerPort), VOIDSTATION_WORKER_TOKEN_FILE: tokenFile,
           VOIDSTATION_CONVERSATION_DIR: join(directory, "conversations"),
           VOIDSTATION_CREDENTIAL_DIR: join(directory, "credentials"),
-          VOIDSTATION_MEDIA_SKILLS_DIR: join(process.cwd(), "worker/skills"),
           VOIDSTATION_MEDIA_SCRIPT_DIR: join(process.cwd(), "worker/media/upstream"),
           VOIDSTATION_MEDIA_CONFIG_FILE: join(directory, "media.json"),
           VOIDSTATION_TEST_MODEL_FILE: fixtureFile, ...extraEnv }, stdio: ["ignore", "pipe", "pipe"],

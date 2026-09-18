@@ -107,7 +107,7 @@ function isTurn(value: unknown): value is Turn {
 }
 
 function isMediaResult(value: unknown): value is MediaResult {
-  return isRecord(value) && (value.kind === "find" || value.kind === "lookup" || value.kind === "details" || value.kind === "discovery" || value.kind === "status" || value.kind === "skill" || value.kind === "configure" || value.kind === "search" || value.kind === "error");
+  return isRecord(value) && (value.kind === "find" || value.kind === "lookup" || value.kind === "details" || value.kind === "discovery" || value.kind === "status" || value.kind === "configure" || value.kind === "search" || value.kind === "error");
 }
 
 function isToolCall(value: unknown): value is ToolCallRecord {
@@ -210,7 +210,6 @@ function mediaResultLabel(result: MediaResult): string {
   if (result.kind === "lookup") return `${result.choices.length} title choice${result.choices.length === 1 ? "" : "s"}`;
   if (result.kind === "details" || result.kind === "status") return `${result.type === "movie" ? "Movie" : "Series"} details`;
   if (result.kind === "discovery") return `${result.type === "movie" ? "Movie" : "Series"} defaults validated`;
-  if (result.kind === "skill") return `${result.service} skill loaded`;
   if (result.kind === "configure") return `${result.type === "movie" ? "Movie" : "Series"} configuration changed`;
   if (result.kind === "search") return `${result.type === "movie" ? "Movie" : "Series"} search accepted`;
   return `Media ${result.operation} failed`;

@@ -6,7 +6,7 @@ import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent
 import { Type } from "typebox";
 import type { MediaChoice, MediaResult, MediaStatus, MediaType, MediaOperation, MediaService, MonitoringMode } from "./media-contract.ts";
 export type { MediaChoice, MediaResult, MediaStatus, MediaType } from "./media-contract.ts";
-type MediaErrorCode = "invalid_request" | "configuration" | "skill_unavailable" | "service_unavailable" | "timed_out" | "cancelled" | "invalid_response";
+type MediaErrorCode = "invalid_request" | "configuration" | "service_unavailable" | "timed_out" | "cancelled" | "invalid_response";
 
 interface ServiceConfig {
   endpoint: string;

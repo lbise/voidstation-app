@@ -43,11 +43,10 @@ export type MediaResult =
   | { kind: "lookup"; choices: MediaChoice[] }
   | { kind: "discovery"; type: MediaType; rootFolder: string; qualityProfileId: number; quality?: string }
   | ({ kind: "status" } & MediaStatus)
-  | { kind: "skill"; service: MediaService; resource: string; content: string }
   | ({ kind: "details" } & MediaDetails)
   | { kind: "configure"; type: MediaType; externalId: number; created: boolean; title?: string; monitored: boolean; monitoring: MonitoringMode; seasons?: number[]; qualityProfileId: number }
   | { kind: "search"; type: MediaType; externalId: number; season: number | null; monitoring?: MonitoringMode; seasons?: number[]; command: string; commandId: number | null; episodeCount?: number }
   | { kind: "error"; operation: MediaOperation; code: string; message: string; data?: MediaStatus };
 
-export type MediaOperation = "find" | "details" | "configure" | "search" | "read_skill" | "lookup" | "discovery" | "status";
+export type MediaOperation = "find" | "details" | "configure" | "search" | "lookup" | "discovery" | "status";
 export type SavedMediaResult = { id: string; turnId: string; result: MediaResult };

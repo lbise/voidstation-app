@@ -27,7 +27,7 @@ docker build -t voidstation-dashboard:issue8-check .
 
 The HTTP tests use the real HTTPS application and Pi worker. They cover separate conversations, two authenticated devices, competing submissions, partial text streaming, disconnect/reconnect, crash and graceful restart, deletion, stream revocation after logout, provider failures, noncooperative cancellation, and provider exceptions. Synthetic canaries check browser responses, model context, transcripts, and logs.
 
-The image checks verify exact installed Pi versions, authenticated internal HTTP, no host port publication, unprivileged execution, read-only code, dropped capabilities, narrow mounts, production rejection of test configuration, and fresh-container restart. A real Pi turn in the test image runs with synthetic host Pi settings, credentials, skills, extensions, and a fake Pi executable. Its captured system prompt and tools show no resource discovery.
+The image checks verify exact installed Pi versions, authenticated internal HTTP, no host port publication, unprivileged execution, read-only code, dropped capabilities, narrow mounts, production rejection of test configuration, and fresh-container restart. A real Pi turn in the test image runs with synthetic host settings, credentials, extensions, and a fake Pi executable. Its captured system prompt and tools show no host resource discovery.
 
 ## Browser checks
 

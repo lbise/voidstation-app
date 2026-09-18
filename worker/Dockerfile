@@ -15,7 +15,6 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY media ./media
-COPY skills /app/media/skills
 RUN python3 -m pip install --no-cache-dir --break-system-packages -r /app/media/requirements.txt \
   && chmod -R a-w /app/media
 # The deterministic model adapter is unavailable in the runtime image.

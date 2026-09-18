@@ -68,15 +68,13 @@ sudo install -o 1000 -g 1000 -m 0600 /path/to/sonarr-key /var/lib/voidstation/me
 
 Use `/run/voidstation-media/radarr.key` and `/run/voidstation-media/sonarr.key` as the `keyFile` values inside the container config. The config must contain both services, HTTPS or HTTP endpoints without credentials or query strings, normalized root folders, positive profile IDs, and explicit quality mappings. The preflight validates those resources and the worker validates them again against each service. Do not put API keys, provider credentials, or real endpoint secrets in `.env`, chat, logs, or source control. A clean example is in `.env.example`; the actual JSON stays outside the repository.
 
-Update shared skills from a committed dotfiles revision, then verify the resulting snapshot:
+Install the worker dependencies and rebuild the image after changing the fixed media adapters:
 
 ```sh
-python3 scripts/update-worker-skills.py --update --source-root /path/to/dotfiles
-python3 scripts/update-worker-skills.py --check
 npm ci --prefix worker
 ```
 
-The command records the dotfiles revision and SHA-256 files in `worker/skills/`. The worker image copies this snapshot and its fixed Python adapters into a read-only image layer. Runtime changes require an image rebuild. Do not mount the development Pi, dotfiles checkout, or a writable skill directory into the worker.
+The worker image copies its fixed Python adapters into a read-only image layer. Runtime changes require an image rebuild. Do not mount the development Pi, dotfiles checkout, or a writable media-adapter directory into the worker.
 
 ### Certificates
 

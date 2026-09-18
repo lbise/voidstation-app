@@ -12,9 +12,9 @@ This records the agreed design discussion. The implementation specification is p
 - Save conversations so the owner can start on a laptop and resume on a smartphone. Keep history until the owner deletes it. Deleting a conversation does not undo its media actions.
 - Provide a dedicated Assistant page with a conversation list, mobile-friendly chat, and structured action results alongside model-generated prose.
 - Build a general assistant with explicitly enabled capabilities, initially limited to media management.
-- Support SKILL.md and reuse the owner's Radarr and Sonarr skills. Maintain shared skill/script sources for terminal agents and Voidstation, with portable paths and explicit defaults rather than separate app-specific copies.
-- Skills are explicitly installed and reviewed by the owner. The assistant cannot discover and install executable dependencies on its own.
-- Use restricted execution for supported skill commands, not a general-purpose shell exposed to the assistant. Command restrictions must enforce permissions independently of skill instructions and CLI confirmation flags.
+- Use four typed media tools backed by fixed Radarr/Sonarr adapters. Do not load service-specific agent skills or expose a general-purpose shell.
+- Keep the adapters and their Python dependency pinned in the worker image. The Assistant cannot install executable dependencies or discover new capabilities.
+- Enforce command restrictions in the tool boundary, independently of model instructions and service CLI confirmation flags.
 - A media request adds a title to Radarr for movies or Sonarr for TV, enables monitoring, and requests a download search. Report addition, search acceptance, download progress, and availability as distinct outcomes.
 - Execute clear single-title additions without an extra confirmation. Ask for clarification when the title is ambiguous and confirmation when multiple titles are requested.
 - Support configured quality defaults and explicit requests such as 4K. Resolve explicit requests against service quality profiles; never silently substitute a lower quality. Explain when no suitable profile is configured. A matching profile does not guarantee that a release is available.
@@ -24,26 +24,25 @@ This records the agreed design discussion. The implementation specification is p
 - Exclude deletion, server configuration changes, and proactive autonomous work from the first version. Radarr and Sonarr own ongoing monitoring and downloads.
 - Keep service credentials server-side and out of model messages.
 
-## Existing skill constraints
+## Media tool constraints
 
-The inspected skill files live in `~/gitrepo/dotfiles/dot/.agents/skills-catalog/radarr/` and `~/gitrepo/dotfiles/dot/.agents/skills-catalog/sonarr/`. Their implementations are `~/gitrepo/dotfiles/scripts/radarr.py` and `~/gitrepo/dotfiles/scripts/sonarr.py`.
+The worker uses fixed Radarr and Sonarr adapters with typed arguments. They require Python and `requests`, keep credentials in the child environment, and reject arbitrary endpoints, methods, payloads, and command arguments.
 
-- The scripts require Python and `requests`; relative invocations assume the dotfiles working directory.
-- They default to the first returned quality profile and root folder, and the first lookup result. Sonarr defaults to monitoring all episodes. These defaults must not silently decide ambiguous user requests.
-- Download search requires explicit flags. An addition alone does not satisfy the agreed media-request behavior.
-- Quality overrides use profile IDs. Neither skill currently defines a 4K selection policy.
-- Generic API commands allow broader changes than the initial assistant scope. CLI confirmation flags are not authorization controls.
-- The existing dashboard image does not contain these runtime dependencies, skills, or scripts.
+- The tools resolve identity before changing media and never silently choose the first result.
+- They validate configured folders and quality profiles instead of trusting service ordering.
+- Download search is a separate explicit tool operation. An addition alone does not prove a search or download.
+- Quality overrides use configured names mapped to validated profile IDs.
+- The dashboard image does not contain the worker's media adapters or runtime dependencies.
 
 ## Agreed execution and operations
 
 - Run Pi in a separate internal assistant worker, not inside the dashboard process. Keep provider/service credentials, Python dependencies, and writable Pi state in the worker. Do not expose the worker directly to browsers or publish its port.
 - The Voidstation Pi runtime is entirely separate from the owner's interactive Pi coding agent on the same server. Install a pinned SDK dependency in the worker image; do not invoke or attach to the host Pi installation, process, or sessions. Host Pi upgrades must not update the worker runtime implicitly.
-- Give the worker its own settings, credential store, session storage, and explicit resource loader. Do not mount or discover the owner's Pi configuration, development workspaces, sessions, extensions, or automatically loaded skills. Load only the approved packaged skills and resources. Changes to either Pi environment must not alter the other's configuration or history.
+- Give the worker its own settings, credential store, session storage, and explicit resource loader. Do not mount or discover the owner's Pi configuration, development workspaces, sessions, extensions, or automatically loaded capabilities. Changes to either Pi environment must not alter the other's configuration or history.
 - Authenticate the worker separately using its own device-code login and credential volume, without copying the development agent's auth files. Using the same Codex account can still share account-level subscription limits; separate runtimes do not create a separate subscription allowance.
-- Package pinned copies of shared skills and scripts during deployment. Dotfiles edits do not change a running deployment until explicitly updated.
-- Disable general-purpose built-in coding tools. Provide a narrow skill-resource reader and a non-shell executor that constructs validated command arguments. Reject generic API escape hatches and arbitrary argument tails. Confirmed quality upgrades need a dedicated restricted path, not unrestricted update access.
-- Keep skills and scripts read-only. They do not require a writable code workspace for the initial media actions. Retain container hardening, with narrowly scoped writable agent state and temporary storage. No Docker socket or broad host mounts.
+- Package pinned copies of the fixed media adapters and Python dependencies during deployment. Source changes do not change a running deployment until explicitly updated.
+- Disable general-purpose built-in coding tools. The four media tools construct validated command arguments and reject generic API escape hatches, arbitrary argument tails, and endpoint changes. Confirmed quality upgrades need a dedicated restricted path, not unrestricted update access.
+- Keep application code and media adapters read-only. Retain container hardening, with narrowly scoped writable agent state and temporary storage. No Docker socket or broad host mounts.
 - Use deployment configuration for service connections, root folders, default profiles, and explicit quality mappings. Validate these against each service. No settings screens initially, and the assistant cannot change defaults.
 - Continue active turns on the worker after browser disconnects. Reconnecting devices recover saved history and attach to live state where available. Allow one active turn per conversation.
 - Persist action and confirmation state separately from Pi transcripts. Pi's live event stream is not durable, and a crashed turn cannot simply resume. Mark interrupted turns and verify uncertain mutations before further work; never blindly replay them.
