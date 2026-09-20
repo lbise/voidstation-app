@@ -1,5 +1,5 @@
-import type { MediaResult, SavedMediaResult } from "../../worker/src/media-contract";
-export type { MediaResult, SavedMediaResult } from "../../worker/src/media-contract";
+import type { MediaResult, SavedMediaResult } from "./media-contract";
+export type { MediaResult, SavedMediaResult } from "./media-contract";
 
 export type TurnStatus = "running" | "complete" | "interrupted" | "failure";
 
