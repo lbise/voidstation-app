@@ -20,6 +20,9 @@ MAX_TERM_LENGTH = 300
 MAX_RESULTS = 20
 MAX_TEXT_LENGTH = 500
 MAX_TIMEOUT_SECONDS = 30
+# Service metadata is much larger than the projected tool output. Keep a
+# separate decoded-body budget for library and episode listings.
+MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 
 
 def _text(value: object, limit: int = MAX_TEXT_LENGTH) -> str | None:
@@ -44,6 +47,20 @@ def _boolean(value: object) -> bool | None:
 
 def _items(value: object) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def read_response_body(response: Any) -> bytes:
+    # ``stream=True`` leaves urllib3's decoder disabled when reading ``raw``
+    # directly. Bound decoded data, rather than compressed wire bytes, so gzip
+    # responses cannot bypass the limit and normal library listings still fit.
+    try:
+        response.raw.decode_content = True
+        body = response.raw.read(MAX_RESPONSE_BYTES + 1)
+        if len(body) > MAX_RESPONSE_BYTES:
+            raise requests.exceptions.RequestException("response too large")
+        return body
+    finally:
+        response.close()
 
 
 def _output(payload: dict[str, Any]) -> None:

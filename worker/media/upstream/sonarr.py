@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 import requests
 
-from media_restricted import run as run_restricted
+from media_restricted import read_response_body, run as run_restricted
 
 
 class SonarrClient:
@@ -52,13 +52,7 @@ class SonarrClient:
             stream=True,
         )
 
-        # ``stream=True`` leaves urllib3's decoder disabled when reading ``raw``
-        # directly. Sonarr commonly gzip-compresses JSON responses, so enable
-        # decoding before enforcing the bounded response size.
-        response.raw.decode_content = True
-        body = response.raw.read(131073)
-        if len(body) > 131072:
-            raise requests.exceptions.RequestException("response too large")
+        body = read_response_body(response)
         if response.status_code >= 300:
             raise requests.exceptions.HTTPError(f"HTTP {response.status_code}", response=response)
         if not body:

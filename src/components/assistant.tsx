@@ -32,6 +32,8 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import {
   Empty,
   EmptyDescription,
@@ -549,6 +551,7 @@ export function Assistant() {
     setSettingsProvider(result.value.provider);
     setSettingsModel(result.value.model);
     setSettingsError(null);
+    setSettingsOpen(false);
   };
 
   const changeSettingsProvider = (provider: AssistantProviderId) => {
@@ -559,6 +562,7 @@ export function Assistant() {
     setSettingsProvider(provider);
     setSettingsModel(nextProvider.models.some((model) => model.id === remembered) ? remembered : nextProvider.models[0]?.id ?? "");
     setModelSearch("");
+    setModelFilter("all");
   };
 
   const selectedProvider = settings?.providers.find((provider) => provider.id === settingsProvider);
@@ -656,25 +660,21 @@ export function Assistant() {
           </div>
           <div className="assistant-page-head__actions">
             {activeConversation?.turn && <Badge variant={turnPresentation[activeConversation.turn.status].variant}>{turnPresentation[activeConversation.turn.status].label}</Badge>}
-            <Button type="button" variant="outline" size="sm" aria-expanded={settingsOpen} aria-controls="assistant-settings" onClick={() => setSettingsOpen((open) => !open)}>
-              <Settings data-icon="inline-start" aria-hidden="true" /> Settings
-            </Button>
-          </div>
-        </header>
-
-        {settingsOpen && (
-          <section className="assistant-settings" id="assistant-settings" aria-labelledby="assistant-settings-title">
-            <div className="assistant-settings__heading">
-              <div>
-                <p className="assistant-eyebrow">Configuration</p>
-                <h2 id="assistant-settings-title">Provider and model</h2>
-              </div>
-              <p>Changes apply to your next message. A reply already running keeps its current model.</p>
-            </div>
+            <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+              <DialogTrigger render={<Button type="button" variant="outline" size="sm" />}>
+                <Settings data-icon="inline-start" aria-hidden="true" /> Settings
+              </DialogTrigger>
+              <DialogContent className="assistant-settings sm:max-w-xl">
+                <DialogHeader className="pr-6">
+                  <DialogTitle>Provider and model</DialogTitle>
+                  <DialogDescription>Changes apply to your next message. A reply already running keeps its current model.</DialogDescription>
+                </DialogHeader>
+                <div className="assistant-settings__body">
             {settingsState === "loading" && <p role="status">Loading provider options...</p>}
             {settingsState === "unavailable" && <Alert variant="destructive"><CircleAlert aria-hidden="true" /><AlertTitle>Provider settings unavailable</AlertTitle><AlertDescription>{settingsError || "The Assistant worker could not return provider settings. Check that it is running the current build."}</AlertDescription></Alert>}
             {settingsState === "ready" && settings && (
-              <form className="assistant-settings__form" onSubmit={saveSettings}>
+              <form id="assistant-settings-form" className="assistant-settings__form" onSubmit={saveSettings}>
+                <FieldGroup>
                 <Field>
                   <FieldLabel htmlFor="assistant-provider">Provider</FieldLabel>
                   <select id="assistant-provider" value={settingsProvider} onChange={(event) => changeSettingsProvider(event.target.value as AssistantProviderId)}>
@@ -683,26 +683,40 @@ export function Assistant() {
                 </Field>
                 <Field>
                   <FieldLabel htmlFor="assistant-model-search">Model</FieldLabel>
-                  <input id="assistant-model-search" value={modelSearch} onChange={(event) => setModelSearch(event.target.value)} placeholder="Search models" />
-                  <div className="assistant-settings__filters" role="group" aria-label="Model price filter">
-                    {(["all", "free", "paid"] as const).map((filter) => <Button key={filter} type="button" size="xs" variant={modelFilter === filter ? "secondary" : "ghost"} onClick={() => setModelFilter(filter)}>{filter[0].toUpperCase() + filter.slice(1)}</Button>)}
-                  </div>
-                  <select id="assistant-model" value={settingsModel} onChange={(event) => setSettingsModel(event.target.value)} aria-label="Assistant model" size={Math.min(Math.max(visibleModels.length, 1), 8)}>
-                    {visibleModels.map((model) => <option key={model.id} value={model.id}>{model.name} · {model.free ? "Free" : `$${model.inputCost}/$${model.outputCost} per 1M tokens`}</option>)}
+                  <Input id="assistant-model-search" value={modelSearch} onChange={(event) => setModelSearch(event.target.value)} placeholder="Search models" />
+                </Field>
+                {settingsProvider === "openrouter" && <Field>
+                  <FieldLabel htmlFor="assistant-model-filter">Price</FieldLabel>
+                  <select id="assistant-model-filter" value={modelFilter} onChange={(event) => setModelFilter(event.target.value as "all" | "free" | "paid")}>
+                    <option value="all">All models</option>
+                    <option value="free">Free models</option>
+                    <option value="paid">Paid models</option>
                   </select>
+                </Field>}
+                <Field>
+                  <FieldLabel htmlFor="assistant-model">Available models</FieldLabel>
+                  <select id="assistant-model" value={settingsModel} onChange={(event) => setSettingsModel(event.target.value)} aria-label="Assistant model" size={6}>
+                    {visibleModels.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
+                  </select>
+                  {visibleModels.length === 0 && <p role="status" className="assistant-settings__hint">No models match your search.</p>}
+                  {selectedModelOption && <p className="assistant-settings__hint">Selected: {selectedModelOption.name}</p>}
                   {selectedProvider && !selectedProvider.configured && <p className="assistant-settings__hint">Configure this provider on the Server before sending a message.</p>}
                   {!selectedModelAvailable && <p className="assistant-settings__hint">The saved model is no longer available. Choose another model before saving.</p>}
-                  {settingsProvider === "openrouter" && selectedModelOption && !selectedModelOption.free && <p className="assistant-settings__hint">Paid model. OpenRouter usage may be billed separately.</p>}
+                  {settingsProvider === "openrouter" && selectedModelOption && <p className="assistant-settings__hint">{selectedModelOption.free ? "Free model." : selectedModelOption.inputCost < 0 || selectedModelOption.outputCost < 0 ? "Pricing depends on the routed model." : `$${selectedModelOption.inputCost} input / $${selectedModelOption.outputCost} output per 1M tokens. OpenRouter usage is billed separately.`}</p>}
                 </Field>
+                </FieldGroup>
                 {settingsError && <Alert variant="destructive"><CircleAlert aria-hidden="true" /><AlertDescription>{settingsError}</AlertDescription></Alert>}
-                <div className="assistant-settings__actions">
-                  <p>{visibleModels.length} model{visibleModels.length === 1 ? "" : "s"} shown{selectedProvider?.id === "openrouter" ? ". Free models may still have rate limits." : "."}</p>
-                  <Button type="submit" disabled={settingsSaving || !settingsModel || !selectedModelAvailable}>{settingsSaving ? "Saving..." : "Save settings"}</Button>
-                </div>
+                <p className="assistant-settings__hint">{visibleModels.length} model{visibleModels.length === 1 ? "" : "s"} shown{selectedProvider?.id === "openrouter" ? ". Free models may still have rate limits." : "."}</p>
               </form>
             )}
-          </section>
-        )}
+                </div>
+                <DialogFooter>
+                  <Button type="submit" form="assistant-settings-form" disabled={settingsState !== "ready" || settingsSaving || !settingsModel || !selectedModelAvailable}>{settingsSaving ? "Saving..." : "Save settings"}</Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          </div>
+        </header>
 
         <section className="assistant-thread" aria-label="Conversation">
           <div className="assistant-notices">
@@ -782,6 +796,29 @@ export function Assistant() {
                         </div>
                       </MessageScrollerItem>
                     )}
+                    {(activeConversation.toolCalls.length > 0 || activeConversation.mediaResults.length > 0) && (
+                      <MessageScrollerItem messageId={`evidence-${activeConversation.id}`}>
+                        <details className="assistant-evidence">
+                          <summary>Tool calls and media evidence</summary>
+                          {activeConversation.toolCalls.length > 0 && (
+                            <section className="assistant-tool-calls" aria-label="Assistant tool calls">
+                              {activeConversation.toolCalls.map((toolCall) => (
+                                <Button key={toolCall.id} type="button" variant="outline" className="assistant-tool-call" onClick={() => setSelectedToolCall(toolCall)}>
+                                  <Wrench data-icon="inline-start" aria-hidden="true" />
+                                  <span>{toolCall.name}</span>
+                                  <Badge variant={toolCall.status === "error" ? "destructive" : "secondary"}>{toolCall.status === "error" ? "Failed" : "Complete"}</Badge>
+                                </Button>
+                              ))}
+                            </section>
+                          )}
+                          {activeConversation.mediaResults.length > 0 && (
+                            <section className="assistant-media-results" aria-label="Media evidence">
+                              {activeConversation.mediaResults.map((entry) => <MediaResultCard key={entry.id} entry={entry} />)}
+                            </section>
+                          )}
+                        </details>
+                      </MessageScrollerItem>
+                    )}
                   </MessageScrollerContent>
                 </MessageScrollerViewport>
                 <MessageScrollerButton aria-label="Jump to latest message">
@@ -790,22 +827,6 @@ export function Assistant() {
                 </MessageScrollerButton>
               </MessageScroller>
             </MessageScrollerProvider>
-          )}
-          {activeConversation && activeConversation.toolCalls.length > 0 && (
-            <section className="assistant-tool-calls" aria-label="Assistant tool calls">
-              {activeConversation.toolCalls.map((toolCall) => (
-                <Button key={toolCall.id} type="button" variant="outline" className="assistant-tool-call" onClick={() => setSelectedToolCall(toolCall)}>
-                  <Wrench data-icon="inline-start" aria-hidden="true" />
-                  <span>{toolCall.name}</span>
-                  <Badge variant={toolCall.status === "error" ? "destructive" : "secondary"}>{toolCall.status === "error" ? "Failed" : "Complete"}</Badge>
-                </Button>
-              ))}
-            </section>
-          )}
-          {activeConversation && activeConversation.mediaResults.length > 0 && (
-            <section className="assistant-media-results" aria-label="Media evidence">
-              {activeConversation.mediaResults.map((entry) => <MediaResultCard key={entry.id} entry={entry} />)}
-            </section>
           )}
           {activeConversation?.turn?.status === "failure" && (
             <Alert variant="destructive">
@@ -832,6 +853,11 @@ export function Assistant() {
                 id="assistant-message"
                 value={text}
                 onChange={(event) => setText(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return;
+                  event.preventDefault();
+                  if (!event.repeat && !composerDisabled && text.trim()) event.currentTarget.form?.requestSubmit();
+                }}
                 placeholder={activeConversation ? "Message the Assistant..." : "Select or create a conversation to send a message"}
                 disabled={composerDisabled}
                 maxLength={8000}
@@ -840,7 +866,7 @@ export function Assistant() {
             </Field>
           </FieldGroup>
           <div className="assistant-composer__actions">
-            <p aria-live="polite">{isRunning ? "The Assistant is working. New messages are unavailable." : "Media changes and searches are available when you ask for them."}</p>
+            <p aria-live="polite">{isRunning ? "The Assistant is working. New messages are unavailable." : "Enter to send · Shift+Enter for a new line"}</p>
             <Button type="submit" disabled={composerDisabled || !text.trim()}>
               <SendHorizontal data-icon="inline-start" aria-hidden="true" />
               Send

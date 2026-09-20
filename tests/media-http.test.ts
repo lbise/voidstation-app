@@ -112,6 +112,38 @@ it("keeps ambiguous lookup results explicit and routes series lookups to Sonarr"
   } finally { await server.stopWorker(); await media.close(); }
 }, 30_000);
 
+it("lists a large compressed Sonarr library while keeping the tool result to 20 entries", async () => {
+  const media = await fakeMedia();
+  try {
+    const library = Array.from({ length: 40 }, (_, index) => ({
+      id: index + 1,
+      tvdbId: index + 10_000,
+      title: `Series ${index + 1}`,
+      monitored: true,
+      hasFile: false,
+      overview: "x".repeat(5_500),
+    }));
+    expect(Buffer.byteLength(JSON.stringify(library))).toBeGreaterThan(200_000);
+    media.setTracked("sonarr", library);
+    const result = await runToolTurn(media, [
+      { toolCalls: [{ name: "media_find", arguments: { type: "series" } }] },
+      { text: "The library is available." },
+    ], "Browse the series library");
+
+    expect(result.conversation.mediaResults[0]?.result).toEqual({
+      kind: "find",
+      choices: [],
+      library: expect.arrayContaining([
+        expect.objectContaining({ externalId: 10_000, title: "Series 1", type: "series", libraryId: 1, missing: true }),
+        expect.objectContaining({ externalId: 10_019, title: "Series 20", type: "series", libraryId: 20, missing: true }),
+      ]),
+    });
+    const output = result.conversation.mediaResults[0]?.result as { library: unknown[] };
+    expect(output.library).toHaveLength(20);
+    expect(media.requests).toContainEqual(expect.objectContaining({ service: "sonarr", method: "GET", path: "/api/v3/series" }));
+  } finally { await server.stopWorker(); await media.close(); }
+}, 30_000);
+
 it("reports service-backed status evidence without exposing credentials", async () => {
   const media = await fakeMedia();
   try {
