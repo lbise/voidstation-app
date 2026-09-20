@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { gzipSync } from "node:zlib";
 import { once } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -65,8 +66,9 @@ async function readBody(request: IncomingMessage): Promise<unknown> {
 }
 
 function send(response: ServerResponse, status: number, body: unknown): void {
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
-  response.end(JSON.stringify(body));
+  const payload = gzipSync(JSON.stringify(body));
+  response.writeHead(status, { "content-type": "application/json; charset=utf-8", "content-encoding": "gzip" });
+  response.end(payload);
 }
 
 async function startService(service: MediaService, requests: MediaRequest[]) {

@@ -81,6 +81,9 @@ it("lists both providers with free and paid OpenRouter models and persists the s
   const initial = await server.request(settings, {}, laptop);
   expect(initial.status).toBe(200);
   const payload = await initial.json() as { provider: string; model: string; providers: { id: string; models: { id: string; free: boolean }[] }[] };
+  const codex = payload.providers.find((provider) => provider.id === "openai-codex");
+  expect(codex?.models.length).toBeGreaterThan(1);
+  expect(codex?.models.map((model) => model.id)).toContain("gpt-5.4");
   const openrouter = payload.providers.find((provider) => provider.id === "openrouter");
   expect(openrouter?.models.length).toBeGreaterThan(1);
   expect(openrouter?.models.some((model) => model.free)).toBe(true);

@@ -7,7 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createAgentSession, SessionManager, type AgentSession, type ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
 import type { AssistantModelOption, AssistantProviderId, AssistantProviderOption, AssistantSettings, Conversation, ConversationDetail, ErrorResponse, Message, ToolCallRecord, Turn } from "./contract.ts";
-import { RestrictedResourceLoader, codexModel, createCodexRuntime, emptySettings, installSanitizedProvider, providerFailure, type ProviderFailureKind } from "./pi.ts";
+import { RestrictedResourceLoader, codexModel, codexModels, createCodexRuntime, emptySettings, installSanitizedProvider, providerFailure, type ProviderFailureKind } from "./pi.ts";
 import { ConversationStore } from "./store.ts";
 import { createMediaTools } from "./media.ts";
 import type { MediaResult } from "./media-contract.ts";
@@ -86,9 +86,9 @@ class Worker {
     }
     const saved = this.store.getAssistantSettings();
     const provider = isProviderId(saved.provider) ? saved.provider : "openai-codex";
-    const model = isProviderId(saved.provider) ? saved.model : this.defaultModel(provider);
+    const model = isProviderId(saved.provider) && this.validModel(provider, saved.model) ? saved.model : this.defaultModel(provider);
     this.selection = { provider, model };
-    if (saved.provider !== provider) this.store.setAssistantSettings(provider, model);
+    if (saved.provider !== provider || saved.model !== model) this.store.setAssistantSettings(provider, model);
   }
 
   createConversation(): Conversation {
@@ -202,7 +202,7 @@ class Worker {
   }
 
   private validModel(provider: AssistantProviderId, model: string): boolean {
-    if (provider === "openai-codex") return model === codexModel(this.runtime).id;
+    if (provider === "openai-codex") return codexModels(this.runtime).some((candidate) => candidate.id === model);
     const candidate = this.runtime.getModel(provider, model);
     return Boolean(candidate && isSelectableOpenRouterModel(candidate));
   }
@@ -233,7 +233,7 @@ class Worker {
   }
 
   private async providerOptions(): Promise<AssistantProviderOption[]> {
-    const codex = codexModel(this.runtime);
+    const codex = codexModels(this.runtime);
     const openrouterModels = this.runtime.getModels("openrouter").filter(isSelectableOpenRouterModel);
     const status = async (provider: AssistantProviderId) => {
       if (this.fixture) return true;
@@ -241,7 +241,7 @@ class Worker {
       catch { return false; }
     };
     return [
-      { id: "openai-codex", name: "OpenAI Codex", configured: await status("openai-codex"), models: [modelOption(codex)] },
+      { id: "openai-codex", name: "OpenAI Codex", configured: await status("openai-codex"), models: codex.map(modelOption) },
       { id: "openrouter", name: "OpenRouter", configured: await status("openrouter"), models: openrouterModels.map(modelOption) },
     ];
   }

@@ -155,8 +155,14 @@ export async function createCodexRuntime(credentialDir: string): Promise<ModelRu
   });
 }
 
-export function codexModel(runtime: ModelRuntime): Model<any> {
-  const model = runtime.getModel("openai-codex", "gpt-5.5");
-  if (!model) throw new Error("The pinned Pi runtime does not include the required Codex model.");
+const DEFAULT_CODEX_MODEL = "gpt-5.5";
+
+export function codexModels(runtime: ModelRuntime): readonly Model<any>[] {
+  return runtime.getModels("openai-codex");
+}
+
+export function codexModel(runtime: ModelRuntime, id = DEFAULT_CODEX_MODEL): Model<any> {
+  const model = runtime.getModel("openai-codex", id);
+  if (!model) throw new Error(`The pinned Pi runtime does not include the Codex model ${id}.`);
   return model;
 }

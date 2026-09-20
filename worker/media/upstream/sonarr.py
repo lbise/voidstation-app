@@ -52,6 +52,10 @@ class SonarrClient:
             stream=True,
         )
 
+        # ``stream=True`` leaves urllib3's decoder disabled when reading ``raw``
+        # directly. Sonarr commonly gzip-compresses JSON responses, so enable
+        # decoding before enforcing the bounded response size.
+        response.raw.decode_content = True
         body = response.raw.read(131073)
         if len(body) > 131072:
             raise requests.exceptions.RequestException("response too large")
