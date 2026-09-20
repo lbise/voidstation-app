@@ -45,6 +45,22 @@ async function openChat() {
 
 function submissions() { return fetchMock.mock.calls.filter(([url]) => url.endsWith("/turns")); }
 
+it("renders assistant replies as safe GitHub-flavored Markdown", async () => {
+  const original = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation(async (url: string, options?: RequestInit) => url.endsWith("/chat-1") ? Response.json({
+    ...conversation,
+    messages: [{ id: "message-1", role: "assistant", text: "## Release status\n\nThe **series** is ready.\n\n- Season one\n- Season two\n\n[Open guide](https://example.com/guide)\n\n`media_find`" }],
+  }) : original(url, options));
+  await openChat();
+  expect(screen.getByRole("heading", { name: "Release status", level: 2 })).toBeTruthy();
+  expect(screen.getByText("series").tagName).toBe("STRONG");
+  expect(screen.getByRole("list")).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Open guide" }).getAttribute("href")).toBe("https://example.com/guide");
+  expect(screen.getByRole("link", { name: "Open guide" }).getAttribute("target")).toBe("_blank");
+  expect(screen.getByText("media_find")).toBeTruthy();
+  expect(screen.queryByText("## Release status")).toBeNull();
+});
+
 it("submits once on Enter and disables the composer while sending", async () => {
   const input = await openChat();
   fireEvent.change(input, { target: { value: "List my series" } });

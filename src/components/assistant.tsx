@@ -16,6 +16,8 @@ import {
   Wrench,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import { LogoutButton } from "@/components/logout-button";
 import {
@@ -215,6 +217,19 @@ function mediaResultLabel(result: MediaResult): string {
   if (result.kind === "configure") return `${result.type === "movie" ? "Movie" : "Series"} configuration changed`;
   if (result.kind === "search") return `${result.type === "movie" ? "Movie" : "Series"} search accepted`;
   return `Media ${result.operation} failed`;
+}
+
+function AssistantMarkdown({ text }: { text: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
+      }}
+    >
+      {text}
+    </ReactMarkdown>
+  );
 }
 
 function MediaResultCard({ entry }: { entry: SavedMediaResult }) {
@@ -783,7 +798,9 @@ export function Assistant() {
                               {message.role === "assistant" && message.provider && message.model && <small className="assistant-message-model">{message.provider === "openrouter" ? "OpenRouter" : "OpenAI Codex"} · {message.model}</small>}
                             </MessageHeader>
                             <Bubble align={message.role === "user" ? "end" : "start"} variant={message.role === "user" ? "secondary" : "outline"}>
-                              <BubbleContent>{message.text}</BubbleContent>
+                              <BubbleContent className={message.role === "assistant" ? "assistant-markdown" : undefined}>
+                                {message.role === "assistant" ? <AssistantMarkdown text={message.text} /> : message.text}
+                              </BubbleContent>
                             </Bubble>
                           </MessageContent>
                         </Message>

@@ -839,6 +839,111 @@ button,
   padding: var(--space-xs) var(--space-sm);
 }
 
+.assistant-markdown {
+  line-height: 1.55;
+}
+
+.assistant-markdown > :first-child {
+  margin-top: 0;
+}
+
+.assistant-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.assistant-markdown p,
+.assistant-markdown ul,
+.assistant-markdown ol,
+.assistant-markdown blockquote,
+.assistant-markdown pre,
+.assistant-markdown table {
+  margin-block: var(--space-sm);
+}
+
+.assistant-markdown ul,
+.assistant-markdown ol {
+  padding-inline-start: 1.25rem;
+}
+
+.assistant-markdown ul {
+  list-style: disc;
+}
+
+.assistant-markdown ol {
+  list-style: decimal;
+}
+
+.assistant-markdown li + li {
+  margin-top: var(--space-2xs);
+}
+
+.assistant-markdown h1,
+.assistant-markdown h2,
+.assistant-markdown h3,
+.assistant-markdown h4 {
+  margin-block: var(--space-md) var(--space-xs);
+  color: var(--color-ink);
+  font-family: var(--font-display);
+  line-height: 1.2;
+}
+
+.assistant-markdown h1 { font-size: var(--text-lg); }
+.assistant-markdown h2 { font-size: var(--text-md); }
+.assistant-markdown h3,
+.assistant-markdown h4 { font-size: var(--text-sm); }
+
+.assistant-markdown a {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.assistant-markdown blockquote {
+  padding-inline-start: var(--space-md);
+  border-inline-start: var(--rule-heavy) solid var(--color-rule-strong);
+  color: var(--color-ink-muted);
+}
+
+.assistant-markdown code {
+  padding: 0.1em 0.3em;
+  background: var(--color-surface-raised);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+.assistant-markdown pre {
+  max-width: 100%;
+  padding: var(--space-sm);
+  overflow-x: auto;
+  background: var(--color-surface-raised);
+}
+
+.assistant-markdown pre code {
+  padding: 0;
+  background: transparent;
+  font-size: var(--text-xs);
+  white-space: pre;
+}
+
+.assistant-markdown table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.assistant-markdown th,
+.assistant-markdown td {
+  padding: var(--space-2xs) var(--space-xs);
+  border: var(--rule-width) solid var(--color-rule);
+  text-align: start;
+}
+
+.assistant-markdown th {
+  color: var(--color-ink);
+  font-weight: 700;
+}
+
 .assistant-message-model {
   margin-inline-start: var(--space-xs);
   color: var(--color-ink-muted);
