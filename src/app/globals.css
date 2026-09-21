@@ -712,6 +712,13 @@ button,
   font-size: clamp(var(--text-xl), 4vw, var(--text-2xl));
 }
 
+.assistant-selection {
+  margin: var(--space-2xs) 0 0;
+  color: var(--color-ink-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
 .assistant-conversation-items {
   display: grid;
   gap: var(--space-2xs);
@@ -1121,13 +1128,6 @@ button,
   padding: var(--space-md);
   border-top: var(--rule-heavy) solid var(--color-rule);
   background: var(--color-surface);
-}
-
-.assistant-composer__actions p {
-  min-height: 1.25rem;
-  margin: 0;
-  color: var(--color-ink-muted);
-  font-size: var(--text-xs);
 }
 
 @media (min-width: 48rem) {

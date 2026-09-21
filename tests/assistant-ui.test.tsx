@@ -57,6 +57,7 @@ it("renders assistant replies as safe GitHub-flavored Markdown", async () => {
     messages: [{ id: "message-1", role: "assistant", text: "## Release status\n\nThe **series** is ready.\n\n- Season one\n- Season two\n\n[Open guide](https://example.com/guide)\n\n`media_find`" }],
   }) : original(url, options));
   await openChat();
+  expect(screen.getByText("OpenAI Codex · gpt-5.5")).toBeTruthy();
   expect(screen.getByRole("heading", { name: "Release status", level: 2 })).toBeTruthy();
   expect(screen.getByText("series").tagName).toBe("STRONG");
   expect(screen.getByRole("list")).toBeTruthy();
@@ -77,6 +78,7 @@ it("submits once on Enter and disables the composer while sending", async () => 
   fireEvent.submit(input.form!);
   expect(submissions()).toHaveLength(1);
   expect(screen.queryByText("Media changes and searches are available when you ask for them.")).toBeNull();
+  expect(screen.queryByText("Enter to send · Shift+Enter for a new line")).toBeNull();
 });
 
 it("leaves Shift+Enter and IME Enter alone and rejects blank or repeated Enter", async () => {

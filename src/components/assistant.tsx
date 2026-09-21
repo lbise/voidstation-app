@@ -751,6 +751,9 @@ export function Assistant() {
           <div>
             <p className="assistant-eyebrow">Assistant</p>
             <h1>{activeConversation?.title || "Assistant"}</h1>
+            {settingsState === "ready" && selectedProvider && selectedModelOption && (
+              <p className="assistant-selection" aria-label="Selected provider and model">{selectedProvider.name} · {selectedModelOption.name}</p>
+            )}
           </div>
           <div className="assistant-page-head__actions">
             {activeConversation?.turn && <Badge variant={turnPresentation[activeConversation.turn.status].variant}>{turnPresentation[activeConversation.turn.status].label}</Badge>}
@@ -927,7 +930,6 @@ export function Assistant() {
             </Field>
           </FieldGroup>
           <div className="assistant-composer__actions">
-            <p aria-live="polite">{isRunning ? "The Assistant is working. New messages are unavailable." : "Enter to send · Shift+Enter for a new line"}</p>
             <Button type="submit" disabled={composerDisabled || !text.trim()}>
               <SendHorizontal data-icon="inline-start" aria-hidden="true" />
               Send
