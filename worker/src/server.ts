@@ -38,7 +38,9 @@ interface ActiveTurn {
   turnId: string;
   provider: AssistantProviderId;
   model: string;
-  live: Message;
+  live?: Message;
+  toolArgs: Map<string, Record<string, unknown>>;
+  toolIds: Map<string, string>;
   abort: AbortController;
   settled: boolean;
   session?: AgentSession;
@@ -112,7 +114,8 @@ class Worker {
     const task: ActiveTurn = {
       conversationId,
       turnId: turn.id,
-      live: { id: randomUUID(), role: "assistant", text: "", provider: selection.provider, model: selection.model },
+      toolArgs: new Map(),
+      toolIds: new Map(),
       abort: new AbortController(),
       settled: false,
       provider: selection.provider,
@@ -137,7 +140,11 @@ class Worker {
     const detail = this.store.getDetail(conversationId);
     if (!detail || detail.turn?.status !== "running") return detail;
     const task = this.activeTurns.get(detail.turn.id);
-    return task ? { ...detail, messages: [...detail.messages, task.live] } : detail;
+    return task?.live ? {
+      ...detail,
+      messages: [...detail.messages, task.live],
+      timeline: [...(detail.timeline ?? []), { type: "message", id: task.live.id }],
+    } : detail;
   }
 
   closeSse(response: ServerResponse): () => void {
@@ -259,7 +266,6 @@ class Worker {
       }, this.config.shutdownTimeoutMs);
     }, this.config.turnTimeoutMs);
     let unsubscribe: (() => void) | undefined;
-    let messageStart = 0;
     try {
       const transcriptPath = this.store.getTranscriptPath(task.conversationId);
       const model = this.modelFor({ provider: task.provider, model: task.model });
@@ -281,18 +287,54 @@ class Worker {
       });
       task.session = created.session;
       unsubscribe = task.session.subscribe((event) => {
-        if (event.type !== "message_update" || event.assistantMessageEvent.type !== "text_delta" || task.settled) return;
-        task.live.text += event.assistantMessageEvent.delta;
-        this.emit(task.conversationId);
+        if (task.settled) return;
+        if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+          const live = task.live ?? (task.live = {
+            id: randomUUID(), role: "assistant", text: "", provider: task.provider, model: task.model,
+          });
+          live.text += event.assistantMessageEvent.delta;
+          this.emit(task.conversationId);
+          return;
+        }
+        if (event.type === "message_end" && event.message.role === "assistant") {
+          const text = assistantMessageText(event.message);
+          if (text) {
+            const message = task.live ?? {
+              id: randomUUID(), role: "assistant" as const, text: "", provider: task.provider, model: task.model,
+            };
+            message.text = text;
+            this.store.saveAssistantMessage(task.conversationId, task.turnId, message);
+          }
+          task.live = undefined;
+          this.emit(task.conversationId);
+          return;
+        }
+        if (event.type === "tool_execution_start") {
+          // Reserve source order now; the row becomes visible only after the tool has completed.
+          task.toolArgs.set(event.toolCallId, isRecord(event.args) ? event.args : {});
+          const id = randomUUID();
+          task.toolIds.set(event.toolCallId, id);
+          this.store.reserveToolCall(task.conversationId, id);
+          return;
+        }
+        if (event.type === "tool_execution_end") {
+          const result = toolResult(event.result);
+          this.store.saveToolCall(task.conversationId, {
+            id: task.toolIds.get(event.toolCallId) ?? randomUUID(),
+            turnId: task.turnId,
+            name: event.toolName,
+            parameters: task.toolArgs.get(event.toolCallId) ?? {},
+            result,
+            status: event.isError || (isRecord(result) && result.kind === "error") ? "error" : "complete",
+          });
+          this.emit(task.conversationId);
+        }
       });
       if (task.settled || this.stopping || task.abort.signal.aborted) {
         await task.session.abort();
         return;
       }
-      messageStart = task.session.messages.length;
       await task.session.prompt(text);
-      this.store.saveToolCalls(task.conversationId, task.turnId, extractToolCalls(task.session, task.turnId, messageStart));
-      this.emit(task.conversationId);
       if (task.settled) return;
       if (this.stopping) {
         this.settle(task, "interrupted", "The worker stopped before this reply finished.");
@@ -304,10 +346,9 @@ class Worker {
         this.setGate(task.provider, failure.kind, failure.message);
         this.settle(task, "failure", failure.message);
       } else {
-        this.settle(task, "complete", null, assistantText(task.session), task.live.id);
+        this.settle(task, "complete", null);
       }
     } catch (error) {
-      if (task.session) this.store.saveToolCalls(task.conversationId, task.turnId, extractToolCalls(task.session, task.turnId, messageStart));
       if (!task.settled) {
         const failure = providerFailure(error, task.provider);
         this.setGate(task.provider, failure.kind, failure.message);
@@ -323,10 +364,10 @@ class Worker {
     }
   }
 
-  private settle(task: ActiveTurn, status: "complete" | "interrupted" | "failure", error: string | null, text?: string, messageId?: string): void {
+  private settle(task: ActiveTurn, status: "complete" | "interrupted" | "failure", error: string | null): void {
     if (task.settled) return;
     task.settled = true;
-    this.store.finishTurn(task.conversationId, task.turnId, status, error, text, messageId);
+    this.store.finishTurn(task.conversationId, task.turnId, status, error);
     this.emit(task.conversationId);
   }
 
@@ -342,39 +383,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function extractToolCalls(session: AgentSession, turnId: string, startIndex: number): ToolCallRecord[] {
-  const calls = new Map<string, ToolCallRecord>();
-  for (const message of (session.messages as unknown[]).slice(startIndex)) {
-    if (!message || typeof message !== "object") continue;
-    const record = message as Record<string, unknown>;
-    if (record.role === "assistant" && Array.isArray(record.content)) {
-      for (const content of record.content) {
-        if (!content || typeof content !== "object") continue;
-        const tool = content as Record<string, unknown>;
-        if (tool.type !== "toolCall" || typeof tool.id !== "string" || typeof tool.name !== "string") continue;
-        calls.set(tool.id, { id: tool.id, turnId, name: tool.name, parameters: isRecord(tool.arguments) ? tool.arguments : {}, result: null, status: "complete" });
-      }
-    }
-    if (record.role === "toolResult" && typeof record.toolCallId === "string") {
-      const call = calls.get(record.toolCallId);
-      if (!call) continue;
-      const detailsRecord = isRecord(record.details) ? record.details : undefined;
-      const details = detailsRecord && Object.hasOwn(detailsRecord, "result") ? detailsRecord.result : undefined;
-      const content = Array.isArray(record.content) ? record.content.find((item) => isRecord(item) && item.type === "text" && typeof item.text === "string") as Record<string, unknown> | undefined : undefined;
-      let result: unknown = details ?? content?.text ?? null;
-      if (typeof result === "string") {
-        try { result = JSON.parse(result) as unknown; } catch { /* Keep bounded text if a tool returned non-JSON text. */ }
-      }
-      call.result = result;
-      call.status = record.isError === true || (isRecord(result) && result.kind === "error") ? "error" : "complete";
-    }
+function toolResult(value: unknown): unknown {
+  const record = isRecord(value) ? value : undefined;
+  const details = record && isRecord(record.details) && Object.hasOwn(record.details, "result") ? record.details.result : undefined;
+  const content = record && Array.isArray(record.content)
+    ? record.content.find((item) => isRecord(item) && item.type === "text" && typeof item.text === "string") as Record<string, unknown> | undefined
+    : undefined;
+  let result: unknown = details ?? content?.text ?? null;
+  if (typeof result === "string") {
+    try { result = JSON.parse(result) as unknown; } catch { /* Keep bounded text if a tool returned non-JSON text. */ }
   }
-  return [...calls.values()];
+  return result;
 }
 
-function assistantText(session: AgentSession): string {
-  const message = [...session.messages].reverse().find((candidate) => candidate.role === "assistant");
-  return message?.role === "assistant" ? message.content.filter((content) => content.type === "text").map((content) => content.text).join("") : "";
+function assistantMessageText(message: unknown): string {
+  const record = isRecord(message) ? message : undefined;
+  return record && Array.isArray(record.content)
+    ? record.content.filter((content) => isRecord(content) && content.type === "text" && typeof content.text === "string").map((content) => content.text).join("")
+    : "";
 }
 
 function assistantError(session: AgentSession): string | undefined {

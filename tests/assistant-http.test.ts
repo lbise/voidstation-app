@@ -11,6 +11,9 @@ const conversations = "/api/assistant/conversations";
 const settings = "/api/assistant/settings";
 
 type Detail = { id: string; title: string; messages: { id: string; role: string; text: string }[];
+  mediaResults?: { id: string }[];
+  toolCalls?: { id: string; status: string }[];
+  timeline?: { type: "message" | "toolCall" | "mediaResult"; id: string }[];
   turn: null | { id: string; status: string; error: string | null } };
 
 async function create() {
@@ -374,4 +377,74 @@ it("revokes an already-open conversation stream when its device signs out", asyn
     expect((await server.request(`${conversations}/${conversation.id}/events`, {}, signedOutDevice)).status).toBe(401);
     expect((await server.request(`${conversations}/${conversation.id}`, {}, phone)).status).toBe(200);
   } finally { stream.close(); }
+});
+
+it("keeps interleaved assistant segments and completed tool evidence in one live, durable timeline", async () => {
+  await server.stopWorker();
+  await server.startWorker();
+  const conversation = await create();
+  await server.fixture([
+    { parts: [
+      { type: "text", text: "I will check the movie." },
+      { type: "toolCall", name: "media_details", arguments: { type: "movie", externalId: 438631 } },
+    ] },
+    { parts: [
+      { type: "text", text: "That check was unavailable; I will search instead." },
+      { type: "toolCall", name: "media_find", arguments: { type: "movie", query: "Dune" } },
+    ] },
+    { chunks: [{ text: "Both checks are recorded.", delayMs: 700 }] },
+  ]);
+  expect((await server.mutate(`${conversations}/${conversation.id}/turns`, "POST", { text: "Check Dune" }, laptop)).status).toBe(202);
+  const stream = await server.stream(`${conversations}/${conversation.id}/events`, laptop);
+  let live: Detail;
+  try {
+    do { live = await snapshot(stream.reader); }
+    while ((live.toolCalls?.length ?? 0) < 2);
+  } finally { stream.close(); }
+  expect(live!.turn?.status).toBe("running");
+  expect(live!.messages.map(({ text }) => text)).toEqual([
+    "Check Dune", "I will check the movie.", "That check was unavailable; I will search instead.",
+  ]);
+  expect(live!.toolCalls?.map(({ status }) => status)).toEqual(["error", "error"]);
+  expect(live!.timeline?.map(({ type }) => type)).toEqual([
+    "message", "message", "toolCall", "mediaResult", "message", "toolCall", "mediaResult",
+  ]);
+  expect(new Set(live!.timeline?.map(({ id }) => id)).size).toBe(live!.timeline?.length);
+
+  const complete = await settled(conversation.id);
+  expect(complete.messages.map(({ text }) => text)).toEqual([
+    "Check Dune", "I will check the movie.", "That check was unavailable; I will search instead.", "Both checks are recorded.",
+  ]);
+  expect(complete.timeline?.map(({ type }) => type)).toEqual([
+    "message", "message", "toolCall", "mediaResult", "message", "toolCall", "mediaResult", "message",
+  ]);
+  await server.stopWorker();
+  await server.startWorker();
+  expect(await history(conversation.id)).toEqual(complete);
+  await server.fixture([{ text: "A second turn remains after the first timeline." }]);
+  expect((await server.mutate(`${conversations}/${conversation.id}/turns`, "POST", { text: "Continue checking" }, laptop)).status).toBe(202);
+  const multiTurn = await settled(conversation.id);
+  expect(multiTurn.messages.map(({ text }) => text).slice(-2)).toEqual([
+    "Continue checking", "A second turn remains after the first timeline.",
+  ]);
+  expect(multiTurn.timeline?.map(({ type }) => type)).toEqual([
+    "message", "message", "toolCall", "mediaResult", "message", "toolCall", "mediaResult", "message", "message", "message",
+  ]);
+  await server.stopWorker();
+  await server.startWorker();
+  expect(await history(conversation.id)).toEqual(multiTurn);
+
+  const failedConversation = await create();
+  await server.fixture([
+    { parts: [
+      { type: "text", text: "I will try a lookup." },
+      { type: "toolCall", name: "media_find", arguments: { type: "movie", query: "Dune" } },
+    ] },
+    { error: "unavailable" },
+  ]);
+  expect((await server.mutate(`${conversations}/${failedConversation.id}/turns`, "POST", { text: "Try Dune" }, laptop)).status).toBe(202);
+  const failed = await settled(failedConversation.id);
+  expect(failed.turn?.status).toBe("failure");
+  expect(failed.messages.map(({ text }) => text)).toEqual(["Try Dune", "I will try a lookup."]);
+  expect(failed.timeline?.map(({ type }) => type)).toEqual(["message", "message", "toolCall", "mediaResult"]);
 });

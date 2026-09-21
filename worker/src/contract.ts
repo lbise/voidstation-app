@@ -38,10 +38,16 @@ export interface ToolCallRecord {
   status: "complete" | "error";
 }
 
+export interface ConversationTimelineItem {
+  type: "message" | "toolCall" | "mediaResult";
+  id: string;
+}
+
 export interface ConversationDetail extends Conversation {
   messages: Message[];
   mediaResults: SavedMediaResult[];
   toolCalls: ToolCallRecord[];
+  timeline?: ConversationTimelineItem[];
 }
 
 export interface ErrorResponse {

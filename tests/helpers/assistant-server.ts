@@ -216,7 +216,7 @@ export async function assistantServer() {
       } catch (error) { await stop(worker); worker = undefined; throw error; }
     },
     async stopWorker(signal: NodeJS.Signals = "SIGTERM") { await stop(worker, signal); worker = undefined; },
-    async fixture(steps: { text?: string; chunks?: { text: string; delayMs?: number }[]; toolCalls?: { name: string; arguments: unknown }[]; delayMs?: number; error?: string; rawError?: string; fault?: string; ignoreAbort?: boolean }[]) {
+    async fixture(steps: { text?: string; chunks?: { text: string; delayMs?: number }[]; parts?: ({ type: "text"; text: string; delayMs?: number } | { type: "toolCall"; name: string; arguments: unknown })[]; toolCalls?: { name: string; arguments: unknown }[]; delayMs?: number; error?: string; rawError?: string; fault?: string; ignoreAbort?: boolean }[]) {
       await writeFile(fixtureFile, JSON.stringify({ steps }));
     },
     async close() {

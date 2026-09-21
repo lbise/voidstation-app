@@ -38,7 +38,13 @@ export type ToolCallRecord = {
   status: "complete" | "error";
 };
 
+export type ConversationTimelineItem = {
+  type: "message" | "toolCall" | "mediaResult";
+  id: string;
+};
+
 export type ConversationDetail = Conversation & {
+  timeline?: ConversationTimelineItem[];
   messages: Message[];
   mediaResults: SavedMediaResult[];
   toolCalls: ToolCallRecord[];

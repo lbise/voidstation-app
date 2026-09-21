@@ -17,9 +17,14 @@ interface FixtureChunk {
   delayMs?: number;
 }
 
+interface FixturePartText { type: "text"; text: string; delayMs?: number; }
+interface FixturePartToolCall { type: "toolCall"; name: string; arguments: Record<string, unknown>; }
+type FixturePart = FixturePartText | FixturePartToolCall;
+
 interface FixtureStep {
   text?: string;
   chunks?: FixtureChunk[];
+  parts?: FixturePart[];
   delayMs?: number;
   error?: "authentication" | "limits" | "unavailable" | "hang";
   rawError?: string;
@@ -116,16 +121,27 @@ export function installFixtureModel(runtime: ModelRuntime): Model<any> {
         }
         if (step.delayMs) await sleep(step.delayMs, options?.signal);
         if (step.error) throw new Error(`${step.error}: ${step.rawError ?? step.error}`);
-        if (step.toolCalls) {
+        const parts = step.parts ?? step.toolCalls?.map((call) => ({ type: "toolCall" as const, ...call }));
+        if (parts) {
           stream.push({ type: "start", partial: output });
-          for (const [index, call] of step.toolCalls.entries()) {
-            const toolCall = { type: "toolCall" as const, id: `fixture-${invocation}-${index}`, name: call.name, arguments: call.arguments };
-            output.content.push(toolCall);
-            stream.push({ type: "toolcall_start", contentIndex: index, partial: output });
-            stream.push({ type: "toolcall_end", contentIndex: index, toolCall, partial: output });
+          for (const [index, part] of parts.entries()) {
+            if (part.type === "toolCall") {
+              const toolCall = { type: "toolCall" as const, id: `fixture-${invocation}-${index}`, name: part.name, arguments: part.arguments };
+              output.content.push(toolCall);
+              stream.push({ type: "toolcall_start", contentIndex: index, partial: output });
+              stream.push({ type: "toolcall_end", contentIndex: index, toolCall, partial: output });
+            } else {
+              if (typeof part.text !== "string" || (part.delayMs !== undefined && (!Number.isFinite(part.delayMs) || part.delayMs < 0))) throw new Error("unavailable: invalid fixture parts");
+              if (part.delayMs) await sleep(part.delayMs, options?.signal);
+              output.content.push({ type: "text", text: part.text });
+              stream.push({ type: "text_start", contentIndex: index, partial: output });
+              stream.push({ type: "text_delta", contentIndex: index, delta: part.text, partial: output });
+              stream.push({ type: "text_end", contentIndex: index, content: part.text, partial: output });
+            }
           }
-          output.stopReason = "toolUse";
-          stream.push({ type: "done", reason: "toolUse", message: output });
+          output.stopReason = parts.some((part) => part.type === "toolCall") ? "toolUse" : "stop";
+          calculateCost(selected, output.usage);
+          stream.push({ type: "done", reason: output.stopReason, message: output });
           stream.end();
           return;
         }

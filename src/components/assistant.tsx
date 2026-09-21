@@ -3,6 +3,7 @@
 import {
   ArrowDown,
   Bot,
+  ChevronRight,
   CircleAlert,
   CircleDashed,
   LayoutDashboard,
@@ -34,6 +35,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
@@ -124,6 +126,7 @@ function isConversationDetail(value: unknown): value is ConversationDetail {
   const messages = value.messages;
   const mediaResults = value.mediaResults;
   const toolCalls = value.toolCalls;
+  const timeline = value.timeline;
   return (
     isConversation(value) &&
     Array.isArray(messages) &&
@@ -136,7 +139,10 @@ function isConversationDetail(value: unknown): value is ConversationDetail {
     ) &&
     Array.isArray(mediaResults) &&
     mediaResults.every((entry) => isRecord(entry) && typeof entry.id === "string" && typeof entry.turnId === "string" && isMediaResult(entry.result)) &&
-    Array.isArray(toolCalls) && toolCalls.every(isToolCall)
+    Array.isArray(toolCalls) && toolCalls.every(isToolCall) &&
+    (timeline === undefined || (Array.isArray(timeline) && timeline.every((entry) =>
+      isRecord(entry) && typeof entry.id === "string" &&
+      (entry.type === "message" || entry.type === "toolCall" || entry.type === "mediaResult"))))
   );
 }
 
@@ -245,6 +251,81 @@ function MediaResultCard({ entry }: { entry: SavedMediaResult }) {
   );
 }
 
+function ToolCallCard({ toolCall }: { toolCall: ToolCallRecord }) {
+  return (
+    <Collapsible className="assistant-tool-activity">
+      <CollapsibleTrigger render={<Button type="button" variant="outline" className="assistant-tool-call" />}>
+        <Wrench data-icon="inline-start" aria-hidden="true" />
+        <span>{toolCall.name}</span>
+        <Badge variant={toolCall.status === "error" ? "destructive" : "secondary"}>{toolCall.status === "error" ? "Failed" : "Complete"}</Badge>
+        <ChevronRight data-icon="inline-end" className="assistant-tool-chevron" aria-hidden="true" />
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="assistant-tool-call-detail">
+          <strong>Parameters</strong>
+          <pre>{JSON.stringify(toolCall.parameters, null, 2)}</pre>
+          <strong>Result</strong>
+          <pre>{JSON.stringify(toolCall.result, null, 2)}</pre>
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+type ThreadEntry =
+  | { type: "message"; value: AssistantMessage }
+  | { type: "toolCall"; value: ToolCallRecord }
+  | { type: "mediaResult"; value: SavedMediaResult };
+
+function conversationEntries(conversation: ConversationDetail): ThreadEntry[] {
+  const entries: ThreadEntry[] = [
+    ...conversation.messages.map((value): ThreadEntry => ({ type: "message", value })),
+    ...conversation.toolCalls.map((value): ThreadEntry => ({ type: "toolCall", value })),
+    ...conversation.mediaResults.map((value): ThreadEntry => ({ type: "mediaResult", value })),
+  ];
+  if (!conversation.timeline) return entries;
+  const remaining = new Map(entries.map((entry) => [`${entry.type}-${entry.value.id}`, entry]));
+  const ordered: ThreadEntry[] = [];
+  for (const reference of conversation.timeline) {
+    const key = `${reference.type}-${reference.id}`;
+    const entry = remaining.get(key);
+    if (entry) {
+      ordered.push(entry);
+      remaining.delete(key);
+    }
+  }
+  return [...ordered, ...remaining.values()];
+}
+
+function ConversationEntry({ entry }: { entry: ThreadEntry }) {
+  if (entry.type === "toolCall") return <ToolCallCard toolCall={entry.value} />;
+  if (entry.type === "mediaResult") return (
+    <Collapsible>
+      <CollapsibleTrigger render={<Button type="button" variant="outline" />}>
+        {mediaResultLabel(entry.value.result)}
+        <ChevronRight data-icon="inline-end" className="assistant-tool-chevron" aria-hidden="true" />
+      </CollapsibleTrigger>
+      <CollapsibleContent><MediaResultCard entry={entry.value} /></CollapsibleContent>
+    </Collapsible>
+  );
+  const message = entry.value;
+  return (
+    <Message align={message.role === "user" ? "end" : "start"}>
+      <MessageContent>
+        <MessageHeader>
+          {message.role === "user" ? "You" : "Assistant"}
+          {message.role === "assistant" && message.provider && message.model && <small className="assistant-message-model">{message.provider === "openrouter" ? "OpenRouter" : "OpenAI Codex"} · {message.model}</small>}
+        </MessageHeader>
+        <Bubble align={message.role === "user" ? "end" : "start"} variant={message.role === "user" ? "secondary" : "outline"}>
+          <BubbleContent className={message.role === "assistant" ? "assistant-markdown" : undefined}>
+            {message.role === "assistant" ? <AssistantMarkdown text={message.text} /> : message.text}
+          </BubbleContent>
+        </Bubble>
+      </MessageContent>
+    </Message>
+  );
+}
+
 function replaceConversation(conversations: Conversation[], next: Conversation): Conversation[] {
   const existing = conversations.findIndex((conversation) => conversation.id === next.id);
   if (existing === -1) return [next, ...conversations];
@@ -263,7 +344,6 @@ export function Assistant() {
   const [sendingIds, setSendingIds] = useState<ReadonlySet<string>>(new Set());
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [conversationPendingDeletion, setConversationPendingDeletion] = useState<Conversation | null>(null);
-  const [selectedToolCall, setSelectedToolCall] = useState<ToolCallRecord | null>(null);
   const [text, setText] = useState("");
   const [optimisticMessage, setOptimisticMessage] = useState<OptimisticMessage | null>(null);
   const [settings, setSettings] = useState<AssistantSettings | null>(null);
@@ -588,9 +668,8 @@ export function Assistant() {
     `${model.name} ${model.id}`.toLowerCase().includes(modelSearch.trim().toLowerCase()),
   ) ?? [];
   const activeConversation = detail?.id === activeId ? detail : null;
-  const messages = activeConversation
-    ? optimisticMessage ? [...activeConversation.messages, optimisticMessage] : activeConversation.messages
-    : [];
+  const entries = activeConversation ? conversationEntries(activeConversation) : [];
+  if (activeConversation && optimisticMessage) entries.push({ type: "message", value: optimisticMessage });
   const isSending = activeId ? sendingIds.has(activeId) : false;
   const isRunning = activeConversation?.turn?.status === "running" || isSending;
   const composerDisabled = !activeConversation || isRunning;
@@ -775,7 +854,7 @@ export function Assistant() {
               <CircleDashed aria-hidden="true" /> Loading conversation...
             </div>
           )}
-          {activeConversation && messages.length === 0 && (
+          {activeConversation && entries.length === 0 && (
             <Empty className="assistant-empty">
               <EmptyMedia variant="icon"><Bot aria-hidden="true" /></EmptyMedia>
               <EmptyHeader>
@@ -784,26 +863,14 @@ export function Assistant() {
               </EmptyHeader>
             </Empty>
           )}
-          {activeConversation && messages.length > 0 && (
+          {activeConversation && entries.length > 0 && (
             <MessageScrollerProvider autoScroll defaultScrollPosition="end">
               <MessageScroller className="assistant-message-scroller">
                 <MessageScrollerViewport aria-label="Conversation messages">
                   <MessageScrollerContent className="assistant-messages" role="log" aria-live="polite" aria-relevant="additions text">
-                    {messages.map((message, index) => (
-                      <MessageScrollerItem key={message.id} messageId={message.id} scrollAnchor={index === messages.length - 1}>
-                        <Message align={message.role === "user" ? "end" : "start"}>
-                          <MessageContent>
-                            <MessageHeader>
-                              {message.role === "user" ? "You" : "Assistant"}
-                              {message.role === "assistant" && message.provider && message.model && <small className="assistant-message-model">{message.provider === "openrouter" ? "OpenRouter" : "OpenAI Codex"} · {message.model}</small>}
-                            </MessageHeader>
-                            <Bubble align={message.role === "user" ? "end" : "start"} variant={message.role === "user" ? "secondary" : "outline"}>
-                              <BubbleContent className={message.role === "assistant" ? "assistant-markdown" : undefined}>
-                                {message.role === "assistant" ? <AssistantMarkdown text={message.text} /> : message.text}
-                              </BubbleContent>
-                            </Bubble>
-                          </MessageContent>
-                        </Message>
+                    {entries.map((entry) => (
+                      <MessageScrollerItem key={`${entry.type}-${entry.value.id}`} messageId={`${entry.type}-${entry.value.id}`} scrollAnchor={entry.type === "message" && entry.value.role === "user"}>
+                        <ConversationEntry entry={entry} />
                       </MessageScrollerItem>
                     ))}
                     {isRunning && (
@@ -811,29 +878,6 @@ export function Assistant() {
                         <div className="assistant-working" role="status">
                           <Radio aria-hidden="true" /> Assistant is working...
                         </div>
-                      </MessageScrollerItem>
-                    )}
-                    {(activeConversation.toolCalls.length > 0 || activeConversation.mediaResults.length > 0) && (
-                      <MessageScrollerItem messageId={`evidence-${activeConversation.id}`}>
-                        <details className="assistant-evidence">
-                          <summary>Tool calls and media evidence</summary>
-                          {activeConversation.toolCalls.length > 0 && (
-                            <section className="assistant-tool-calls" aria-label="Assistant tool calls">
-                              {activeConversation.toolCalls.map((toolCall) => (
-                                <Button key={toolCall.id} type="button" variant="outline" className="assistant-tool-call" onClick={() => setSelectedToolCall(toolCall)}>
-                                  <Wrench data-icon="inline-start" aria-hidden="true" />
-                                  <span>{toolCall.name}</span>
-                                  <Badge variant={toolCall.status === "error" ? "destructive" : "secondary"}>{toolCall.status === "error" ? "Failed" : "Complete"}</Badge>
-                                </Button>
-                              ))}
-                            </section>
-                          )}
-                          {activeConversation.mediaResults.length > 0 && (
-                            <section className="assistant-media-results" aria-label="Media evidence">
-                              {activeConversation.mediaResults.map((entry) => <MediaResultCard key={entry.id} entry={entry} />)}
-                            </section>
-                          )}
-                        </details>
                       </MessageScrollerItem>
                     )}
                   </MessageScrollerContent>
@@ -891,21 +935,6 @@ export function Assistant() {
           </div>
         </form>
       </main>
-      <AlertDialog open={Boolean(selectedToolCall)} onOpenChange={(open) => { if (!open) setSelectedToolCall(null); }}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{selectedToolCall?.name}</AlertDialogTitle>
-            <AlertDialogDescription>Full tool call details.</AlertDialogDescription>
-          </AlertDialogHeader>
-          <div className="assistant-tool-call-detail">
-            <strong>Parameters</strong>
-            <pre>{JSON.stringify(selectedToolCall?.parameters ?? {}, null, 2)}</pre>
-            <strong>Result</strong>
-            <pre>{JSON.stringify(selectedToolCall?.result ?? null, null, 2)}</pre>
-          </div>
-          <AlertDialogFooter><AlertDialogCancel>Close</AlertDialogCancel></AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
       <AlertDialog
         open={Boolean(conversationPendingDeletion)}
         onOpenChange={(open) => {

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Assistant } from "../src/components/assistant";
 
@@ -14,10 +14,15 @@ const initialSettings = {
   providers: [{ id: "openai-codex", name: "OpenAI Codex", configured: true, models: [model("gpt-5.5"), model("gpt-5.4")] }],
 };
 let fetchMock: ReturnType<typeof vi.fn<(url: string, options?: RequestInit) => Promise<Response>>>;
+let emitSnapshot: (snapshot: unknown) => void;
 
 beforeEach(() => {
   window.history.replaceState({}, "", "/assistant");
   vi.stubGlobal("EventSource", class {
+    onmessage?: (event: MessageEvent) => void;
+    constructor() {
+      emitSnapshot = (snapshot) => this.onmessage?.(new MessageEvent("message", { data: JSON.stringify(snapshot) }));
+    }
     addEventListener() {}
     removeEventListener() {}
     close() {}
@@ -91,21 +96,90 @@ it("leaves Shift+Enter and IME Enter alone and rejects blank or repeated Enter",
   expect(JSON.parse(submissions()[0][1]!.body as string).text).toBe("First line\nSecond line");
 });
 
-it("keeps tool evidence inside the message scroller and collapsed until requested", async () => {
+it("interleaves tool calls with messages and expands each call in place", async () => {
+  const original = fetchMock.getMockImplementation()!;
+  const detail = {
+    ...conversation,
+    messages: [
+      { id: "user-1", role: "user", text: "List my series" },
+      { id: "message-1", role: "assistant", text: "Checking your library." },
+      { id: "message-2", role: "assistant", text: "Your series are listed." },
+      { id: "user-2", role: "user", text: "Check that title" },
+      { id: "message-3", role: "assistant", text: "That title is unavailable." },
+    ],
+    toolCalls: [
+      { id: "tool-1", turnId: "turn-1", name: "media_find", parameters: { type: "series" }, result: { kind: "find", choices: [], library: [] }, status: "complete" },
+      { id: "tool-2", turnId: "turn-2", name: "media_details", parameters: { externalId: 42 }, result: { message: "Title not found" }, status: "error" },
+    ],
+    timeline: [
+      { type: "message", id: "user-1" },
+      { type: "message", id: "message-1" },
+      { type: "toolCall", id: "tool-1" },
+      { type: "message", id: "message-2" },
+      { type: "message", id: "user-2" },
+      { type: "toolCall", id: "tool-2" },
+      { type: "message", id: "message-3" },
+    ],
+  };
+  fetchMock.mockImplementation(async (url: string, options?: RequestInit) => url.endsWith("/chat-1") ? Response.json(detail) : original(url, options));
+  await openChat();
+  const log = screen.getByRole("log");
+  expect(Array.from(log.querySelectorAll('[data-slot="message-scroller-item"]')).map((entry) => entry.textContent)).toEqual([
+    "YouList my series", "AssistantChecking your library.", "media_findComplete",
+    "AssistantYour series are listed.", "YouCheck that title", "media_detailsFailed", "AssistantThat title is unavailable.",
+  ]);
+  expect(screen.queryByText("Tool calls and media evidence")).toBeNull();
+  const tool = within(log).getByRole("button", { name: /media_find\s*Complete/ });
+  expect(tool.getAttribute("aria-expanded")).toBe("false");
+  expect(screen.queryByText("Parameters")).toBeNull();
+  fireEvent.click(tool);
+  expect(tool.getAttribute("aria-expanded")).toBe("true");
+  expect(within(log).getByText("Parameters")).toBeTruthy();
+  expect(within(log).getByText(/"type": "series"/)).toBeTruthy();
+  expect(within(log).getByText(/"kind": "find"/)).toBeTruthy();
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  act(() => emitSnapshot(detail));
+  expect(tool.getAttribute("aria-expanded")).toBe("true");
+  fireEvent.click(within(log).getByRole("button", { name: /media_details\s*Failed/ }));
+  expect(within(log).getByText(/Title not found/)).toBeTruthy();
+});
+
+it("inserts live tool calls before the next reply without moving earlier calls", async () => {
+  await openChat();
+  const live = {
+    ...conversation,
+    turn: { id: "turn-1", status: "running", error: null, startedAt: "2026-01-01T00:00:00Z", finishedAt: null },
+    messages: [{ id: "user-1", role: "user", text: "Find Dune" }],
+    toolCalls: [{ id: "tool-1", turnId: "turn-1", name: "media_find", parameters: {}, result: { title: "Dune" }, status: "complete" }],
+    timeline: [{ type: "message", id: "user-1" }, { type: "toolCall", id: "tool-1" }],
+  };
+  act(() => emitSnapshot(live));
+  const log = screen.getByRole("log");
+  expect(Array.from(log.querySelectorAll('[data-slot="message-scroller-item"]')).map((entry) => entry.textContent)).toEqual([
+    "YouFind Dune", "media_findComplete", " Assistant is working...",
+  ]);
+  act(() => emitSnapshot({
+    ...live,
+    turn: { ...live.turn, status: "complete", finishedAt: "2026-01-01T00:00:01Z" },
+    messages: [...live.messages, { id: "answer-1", role: "assistant", text: "Found Dune." }],
+    timeline: [...live.timeline, { type: "message", id: "answer-1" }],
+  }));
+  expect(Array.from(log.querySelectorAll('[data-slot="message-scroller-item"]')).map((entry) => entry.textContent)).toEqual([
+    "YouFind Dune", "media_findComplete", "AssistantFound Dune.",
+  ]);
+  expect(screen.getAllByRole("button", { name: /media_find/ })).toHaveLength(1);
+});
+
+it("keeps legacy media evidence available as an inline expandable entry", async () => {
   const original = fetchMock.getMockImplementation()!;
   fetchMock.mockImplementation(async (url: string, options?: RequestInit) => url.endsWith("/chat-1") ? Response.json({
     ...conversation,
-    messages: [{ id: "message-1", role: "assistant", text: "Your series are listed." }],
-    toolCalls: [{ id: "tool-1", turnId: "turn-1", name: "media_find", parameters: { type: "series" }, result: { kind: "find", choices: [], library: [] }, status: "complete" }],
+    mediaResults: [{ id: "result-1", turnId: "turn-1", result: { kind: "error", operation: "find", message: "Service unavailable" } }],
+    timeline: [{ type: "mediaResult", id: "result-1" }],
   }) : original(url, options));
   await openChat();
-  const evidence = screen.getByText("Tool calls and media evidence").closest("details")!;
-  expect(evidence.open).toBe(false);
-  expect(evidence.closest('[data-slot="message-scroller-content"]')).not.toBeNull();
-  expect(screen.getByText("Your series are listed.")).toBeTruthy();
-  fireEvent.click(evidence.querySelector("summary")!);
-  fireEvent.click(screen.getByRole("button", { name: /media_find\s*Complete/ }));
-  expect(await screen.findByRole("alertdialog", { name: "media_find" })).toBeTruthy();
+  fireEvent.click(within(screen.getByRole("log")).getByRole("button", { name: "Media find failed" }));
+  expect(screen.getByText("Service unavailable")).toBeTruthy();
 });
 
 it("opens settings in a dialog and submits the form from its visible footer", async () => {

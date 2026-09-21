@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { chmodSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Conversation, ConversationDetail, Message, ToolCallRecord, Turn, TurnStatus, SavedMediaResult } from "./contract.ts";
+import type { Conversation, ConversationDetail, ConversationTimelineItem, Message, ToolCallRecord, Turn, TurnStatus, SavedMediaResult } from "./contract.ts";
 import type { MediaResult } from "./media-contract.ts";
 
 interface ConversationRow { id: string; title: string; created_at: string; updated_at: string; transcript_path: string; }
@@ -10,6 +10,7 @@ interface TurnRow { id: string; conversation_id: string; status: TurnStatus; err
 interface MessageRow { id: string; role: Message["role"]; text: string; provider: string | null; model: string | null; }
 interface AssistantSettingsRow { provider: string; model: string; codex_model: string; openrouter_model: string; }
 interface ToolCallRow { id: string; turn_id: string; name: string; parameters: string; result: string; status: "complete" | "error"; position: number; }
+interface TimelineRow { type: ConversationTimelineItem["type"]; ref_id: string; }
 interface DeletionRow { conversation_id: string; transcript_path: string; trash_path: string; }
 
 const now = () => new Date().toISOString();
@@ -68,10 +69,63 @@ export class ConversationStore {
         turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE, name TEXT NOT NULL,
         parameters TEXT NOT NULL, result TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('complete', 'error')), position INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS timeline_items (
+        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        position INTEGER NOT NULL,
+        type TEXT NOT NULL CHECK(type IN ('message', 'toolCall', 'mediaResult')),
+        ref_id TEXT NOT NULL,
+        PRIMARY KEY(conversation_id, position),
+        UNIQUE(conversation_id, type, ref_id)
+      );
     `);
     const columns = this.database.prepare("PRAGMA table_info(turns)").all() as unknown as { name: string }[];
     if (!columns.some((column) => column.name === "provider")) this.database.exec("ALTER TABLE turns ADD COLUMN provider TEXT NOT NULL DEFAULT 'openai-codex'");
     if (!columns.some((column) => column.name === "model")) this.database.exec("ALTER TABLE turns ADD COLUMN model TEXT NOT NULL DEFAULT 'gpt-5.5'");
+    this.backfillTimeline();
+  }
+
+  private backfillTimeline(): void {
+    const conversations = this.database.prepare("SELECT id FROM conversations").all() as { id: string }[];
+    for (const conversation of conversations) {
+      if (this.database.prepare("SELECT 1 FROM timeline_items WHERE conversation_id = ? LIMIT 1").get(conversation.id)) continue;
+      this.database.exec("BEGIN IMMEDIATE");
+      try {
+        // A prior worker may have completed this conversation after the first check.
+        if (!this.database.prepare("SELECT 1 FROM timeline_items WHERE conversation_id = ? LIMIT 1").get(conversation.id)) {
+          this.backfillConversationTimeline(conversation.id);
+        }
+        this.database.exec("COMMIT");
+      } catch (error) {
+        this.database.exec("ROLLBACK");
+        throw error;
+      }
+    }
+  }
+
+  private backfillConversationTimeline(conversationId: string): void {
+    const insert = this.database.prepare("INSERT INTO timeline_items (conversation_id, position, type, ref_id) VALUES (?, ?, ?, ?)");
+    const messages = this.database.prepare("SELECT id, turn_id, role FROM messages WHERE conversation_id = ? ORDER BY position ASC").all(conversationId) as { id: string; turn_id: string | null; role: Message["role"] }[];
+    const assistantTurns = new Set(messages.flatMap((message) => message.role === "assistant" && message.turn_id ? [message.turn_id] : []));
+    const addedTools = new Set<string>();
+    const addedMedia = new Set<string>();
+    let position = 1;
+    const appendTurnEvidence = (turnId: string) => {
+      const tools = this.database.prepare("SELECT id FROM tool_calls WHERE conversation_id = ? AND turn_id = ? ORDER BY position ASC").all(conversationId, turnId) as { id: string }[];
+      const media = this.database.prepare("SELECT id FROM media_results WHERE conversation_id = ? AND turn_id = ? ORDER BY position ASC").all(conversationId, turnId) as { id: string }[];
+      for (const item of tools) if (!addedTools.has(item.id)) { insert.run(conversationId, position++, "toolCall", item.id); addedTools.add(item.id); }
+      for (const item of media) if (!addedMedia.has(item.id)) { insert.run(conversationId, position++, "mediaResult", item.id); addedMedia.add(item.id); }
+    };
+    for (const message of messages) {
+      // Older data has no cross-table sequence, so put a turn's evidence immediately before its reply.
+      if (message.role === "assistant" && message.turn_id) appendTurnEvidence(message.turn_id);
+      insert.run(conversationId, position++, "message", message.id);
+      // A failed old turn may have evidence but no saved reply; retain it after that turn's user message.
+      if (message.role === "user" && message.turn_id && !assistantTurns.has(message.turn_id)) appendTurnEvidence(message.turn_id);
+    }
+    const orphanTools = this.database.prepare("SELECT id FROM tool_calls WHERE conversation_id = ? ORDER BY position ASC").all(conversationId) as { id: string }[];
+    const orphanMedia = this.database.prepare("SELECT id FROM media_results WHERE conversation_id = ? ORDER BY position ASC").all(conversationId) as { id: string }[];
+    for (const item of orphanTools) if (!addedTools.has(item.id)) insert.run(conversationId, position++, "toolCall", item.id);
+    for (const item of orphanMedia) if (!addedMedia.has(item.id)) insert.run(conversationId, position++, "mediaResult", item.id);
   }
 
   private interruptRunningTurns(): void {
@@ -125,24 +179,39 @@ export class ConversationStore {
     const toolRows = this.database.prepare("SELECT id, turn_id, name, parameters, result, status, position FROM tool_calls WHERE conversation_id = ? ORDER BY position ASC")
       .all(id) as unknown as ToolCallRow[];
     const toolCalls: ToolCallRecord[] = toolRows.map((row) => ({ id: row.id, turnId: row.turn_id, name: row.name, parameters: JSON.parse(row.parameters) as Record<string, unknown>, result: JSON.parse(row.result) as unknown, status: row.status }));
+    const timelineRows = this.database.prepare("SELECT type, ref_id FROM timeline_items WHERE conversation_id = ? ORDER BY position ASC")
+      .all(id) as unknown as TimelineRow[];
+    const known = {
+      message: new Set(messages.map((message) => message.id)),
+      toolCall: new Set(toolCalls.map((call) => call.id)),
+      mediaResult: new Set(mediaResults.map((result) => result.id)),
+    };
+    const timeline = timelineRows.flatMap((row) => known[row.type].has(row.ref_id) ? [{ type: row.type, id: row.ref_id }] : []);
     return { ...conversation, messages: messages.map((message) => ({
       id: message.id, role: message.role, text: message.text,
       ...(message.role === "assistant" && message.provider && message.model ? { provider: message.provider, model: message.model } : {}),
-    })), mediaResults, toolCalls };
+    })), mediaResults, toolCalls, timeline };
   }
 
-  saveMediaResult(conversationId: string, turnId: string, result: MediaResult): void {
+  saveMediaResult(conversationId: string, turnId: string, result: MediaResult): string {
+    const id = randomUUID();
     this.database.prepare("INSERT INTO media_results (id, conversation_id, turn_id, result) VALUES (?, ?, ?, ?)")
-      .run(randomUUID(), conversationId, turnId, JSON.stringify(result));
+      .run(id, conversationId, turnId, JSON.stringify(result));
+    this.appendTimeline(conversationId, "mediaResult", id);
+    return id;
   }
 
-  saveToolCalls(conversationId: string, turnId: string, calls: ToolCallRecord[]): void {
-    if (calls.length === 0) return;
-    const nextPosition = (this.database.prepare("SELECT COALESCE(MAX(position), 0) + 1 AS position FROM tool_calls WHERE conversation_id = ?").get(conversationId) as { position: number }).position;
-    const insert = this.database.prepare("INSERT OR REPLACE INTO tool_calls (id, conversation_id, turn_id, name, parameters, result, status, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-    for (const [index, call] of calls.entries()) {
-      insert.run(call.id, conversationId, turnId, call.name, JSON.stringify(call.parameters), JSON.stringify(call.result), call.status, nextPosition + index);
-    }
+  reserveToolCall(conversationId: string, id: string): void {
+    this.appendTimeline(conversationId, "toolCall", id);
+  }
+
+  saveToolCall(conversationId: string, call: ToolCallRecord): void {
+    this.reserveToolCall(conversationId, call.id);
+    const current = this.database.prepare("SELECT position FROM tool_calls WHERE id = ?").get(call.id) as { position: number } | undefined;
+    const position = current?.position ?? (this.database.prepare("SELECT COALESCE(MAX(position), 0) + 1 AS position FROM tool_calls WHERE conversation_id = ?").get(conversationId) as { position: number }).position;
+    this.database.prepare(`INSERT INTO tool_calls (id, conversation_id, turn_id, name, parameters, result, status, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET name = excluded.name, parameters = excluded.parameters, result = excluded.result, status = excluded.status`)
+      .run(call.id, conversationId, call.turnId, call.name, JSON.stringify(call.parameters), JSON.stringify(call.result), call.status, position);
   }
 
   getTranscriptPath(id: string): string | undefined {
@@ -181,14 +250,13 @@ export class ConversationStore {
     }
   }
 
-  finishTurn(conversationId: string, turnId: string, status: Exclude<TurnStatus, "running">, error: string | null, text?: string, messageId?: string): void {
+  finishTurn(conversationId: string, turnId: string, status: Exclude<TurnStatus, "running">, error: string | null): void {
     const finishedAt = now();
     this.database.exec("BEGIN IMMEDIATE");
     try {
       const result = this.database.prepare("UPDATE turns SET status = ?, error = ?, finished_at = ? WHERE id = ? AND conversation_id = ? AND status = 'running'")
         .run(status, error, finishedAt, turnId, conversationId);
       if (result.changes === 1) {
-        if (text !== undefined) this.insertMessage(conversationId, turnId, "assistant", text, messageId);
         this.database.prepare("UPDATE conversations SET updated_at = ? WHERE id = ?").run(finishedAt, conversationId);
       }
       this.database.exec("COMMIT");
@@ -268,10 +336,22 @@ export class ConversationStore {
     return { id: row.id, title: row.title, createdAt: row.created_at, updatedAt: row.updated_at, turn: latest ? turn(latest) : null };
   }
 
+  saveAssistantMessage(conversationId: string, turnId: string, message: Message): void {
+    if (!message.text) return;
+    this.insertMessage(conversationId, turnId, "assistant", message.text, message.id);
+  }
+
   private insertMessage(conversationId: string, turnId: string, role: Message["role"], text: string, id: string = randomUUID()): void {
     const position = (this.database.prepare("SELECT COALESCE(MAX(position), 0) + 1 AS position FROM messages WHERE conversation_id = ?").get(conversationId) as { position: number }).position;
     this.database.prepare("INSERT INTO messages (id, conversation_id, turn_id, role, text, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run(id, conversationId, turnId, role, text, position, now());
+    this.appendTimeline(conversationId, "message", id);
+  }
+
+  private appendTimeline(conversationId: string, type: ConversationTimelineItem["type"], id: string): void {
+    const position = (this.database.prepare("SELECT COALESCE(MAX(position), 0) + 1 AS position FROM timeline_items WHERE conversation_id = ?").get(conversationId) as { position: number }).position;
+    this.database.prepare("INSERT OR IGNORE INTO timeline_items (conversation_id, position, type, ref_id) VALUES (?, ?, ?, ?)")
+      .run(conversationId, position, type, id);
   }
 
   private relativeTranscriptPath(path: string): string { return this.relativePath(this.transcriptRoot, path, "Transcript"); }
