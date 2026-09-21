@@ -8,7 +8,7 @@ it("passes the explicit owner cutover option through the production entry point"
   const directory = mkdtempSync(join(tmpdir(), "voidstation-deploy-entry-"));
   const log = join(directory, "commands");
   try {
-    for (const name of ["git", "npm"]) {
+    for (const name of ["git", "npm", "sudo"]) {
       const command = join(directory, name);
       writeFileSync(command, `#!/usr/bin/env bash\nprintf '%s\\n' '${name}' "$@" >> "$COMMAND_LOG"\n`);
       chmodSync(command, 0o755);
@@ -18,7 +18,7 @@ it("passes the explicit owner cutover option through the production entry point"
       encoding: "utf8",
     });
     expect(result.status, result.stderr).toBe(0);
-    expect(readFileSync(log, "utf8")).toBe("git\nstatus\n--porcelain\ngit\npull\n--ff-only\norigin\nmain\nnpm\nrun\ndocker:up\n--\n--cutover\n");
+    expect(readFileSync(log, "utf8")).toBe("git\nstatus\n--porcelain\nsudo\n-v\ngit\npull\n--ff-only\norigin\nmain\nnpm\nrun\ndocker:up\n--\n--cutover\n");
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

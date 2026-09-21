@@ -9,5 +9,9 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
+if [[ $(id -u) -ne 0 ]]; then
+  sudo -v
+fi
+
 git pull --ff-only origin main
 exec npm run docker:up -- "$@"
