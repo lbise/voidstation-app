@@ -10,6 +10,7 @@ import type { AssistantModelOption, AssistantProviderId, AssistantProviderOption
 import { RestrictedResourceLoader, codexModel, codexModels, createCodexRuntime, emptySettings, installSanitizedProvider, providerFailure, type ProviderFailureKind } from "./pi.ts";
 import { ConversationStore } from "./store.ts";
 import { createMediaTools } from "./media.ts";
+import { createWebTools } from "./web.ts";
 import type { MediaResult } from "./media-contract.ts";
 
 const MAX_BODY_BYTES = 20_000;
@@ -278,9 +279,12 @@ class Worker {
         model,
         thinkingLevel: "medium",
         noTools: "builtin",
-        customTools: createMediaTools((result: MediaResult) => {
-          this.store.saveMediaResult(task.conversationId, task.turnId, result);
-        }),
+        customTools: [
+          ...createMediaTools((result: MediaResult) => {
+            this.store.saveMediaResult(task.conversationId, task.turnId, result);
+          }),
+          ...createWebTools(),
+        ],
         resourceLoader: new RestrictedResourceLoader(),
         settingsManager: emptySettings(),
         sessionManager,

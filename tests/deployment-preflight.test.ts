@@ -31,6 +31,8 @@ type PreflightOptions = {
   postDeploy?: boolean;
   inspection?: (paths: Paths, endpoint: Endpoint) => Record<string, any>;
   workerInspection?: (paths: Paths) => Record<string, any>;
+  searxngInspection?: (paths: Paths) => Record<string, any>;
+  searxngImageInspection?: Record<string, any>;
   setup?: (
     paths: Paths,
     workspace: string,
@@ -118,7 +120,95 @@ function lockedDashboard(paths: Paths): Record<string, any> {
         ],
       },
       "assistant-worker": lockedWorker(paths),
+      searxng: lockedSearxng(paths),
     },
+  };
+}
+
+const searxngImage =
+  "docker.io/searxng/searxng:2026.9.30-a9d990033@sha256:a07a5cd2da2c63d66e559f9e4d3a3db106cfc6c32fb0ac70abe91cc28bcd7350";
+const searxngDigest =
+  "sha256:a07a5cd2da2c63d66e559f9e4d3a3db106cfc6c32fb0ac70abe91cc28bcd7350";
+const searxngEntrypoint = [
+  "/bin/sh",
+  "-c",
+  'SEARXNG_SECRET="$(cat /run/voidstation-searxng/secret)" && [ "${#SEARXNG_SECRET}" -ge 32 ] || { echo "SearXNG secret file is missing or shorter than 32 characters." >&2; exit 78; }; export SEARXNG_SECRET; exec /usr/local/searxng/entrypoint.sh',
+];
+
+function lockedSearxng(paths: Paths): Record<string, any> {
+  return {
+    image: searxngImage,
+    // docker compose config escapes $ as $$ in its resolved output.
+    entrypoint: searxngEntrypoint.map((part) => part.replaceAll("$", "$$")),
+    command: null,
+    networks: { default: null },
+    restart: "unless-stopped",
+    user: "977:977",
+    read_only: true,
+    cap_drop: ["ALL"],
+    security_opt: ["no-new-privileges:true"],
+    tmpfs: [
+      "/tmp:size=64m,noexec,nosuid,nodev",
+      "/var/cache/searxng:size=16m,noexec,nosuid,nodev,uid=977,gid=977,mode=0700",
+    ],
+    volumes: [
+      bind(`${process.cwd()}/deploy/searxng`, "/etc/searxng"),
+      bind(paths.searxngSecret, "/run/voidstation-searxng/secret"),
+    ],
+  };
+}
+
+function deployedSearxng(paths: Paths): Record<string, any> {
+  return {
+    Image: "sha256:searxng-image-id",
+    Config: {
+      User: "977:977",
+      Image: searxngImage,
+      Entrypoint: searxngEntrypoint,
+      Cmd: null,
+      Env: [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "__SEARXNG_SETTINGS_PATH=/etc/searxng/settings.yml",
+        "GRANIAN_PORT=8080",
+      ],
+      Labels: {
+        "com.docker.compose.project": "voidstation-app",
+        "com.docker.compose.service": "searxng",
+      },
+    },
+    HostConfig: {
+      ReadonlyRootfs: true,
+      Privileged: false,
+      CapAdd: null,
+      CapDrop: ["ALL"],
+      SecurityOpt: ["no-new-privileges:true"],
+      Tmpfs: {
+        "/tmp": "size=64m,noexec,nosuid,nodev",
+        "/var/cache/searxng":
+          "size=16m,noexec,nosuid,nodev,uid=977,gid=977,mode=0700",
+      },
+      NetworkMode: "voidstation-app_default",
+      PortBindings: {},
+    },
+    NetworkSettings: {
+      Ports: { "8080/tcp": null },
+      Networks: { "voidstation-app_default": {} },
+    },
+    Mounts: [
+      {
+        Type: "bind",
+        Source: `${process.cwd()}/deploy/searxng`,
+        Destination: "/etc/searxng",
+        RW: false,
+      },
+      {
+        Type: "bind",
+        Source: paths.searxngSecret,
+        Destination: "/run/voidstation-searxng/secret",
+        RW: false,
+      },
+    ],
+    State: { Running: true, Restarting: false },
   };
 }
 
@@ -137,6 +227,8 @@ function lockedWorker(paths: Paths): Record<string, any> {
       VOIDSTATION_CONVERSATION_DIR: "/var/lib/voidstation/conversations",
       VOIDSTATION_CREDENTIAL_DIR: "/var/lib/voidstation/credentials",
       VOIDSTATION_MEDIA_CONFIG_FILE: "/run/voidstation-media/config.json",
+      VOIDSTATION_SEARCH_PROVIDER: "searxng",
+      VOIDSTATION_SEARXNG_URL: "http://searxng:8080",
     },
     read_only: true,
     cap_drop: ["ALL"],
@@ -172,6 +264,8 @@ function deployedWorker(paths: Paths): Record<string, any> {
         "VOIDSTATION_CONVERSATION_DIR=/var/lib/voidstation/conversations",
         "VOIDSTATION_CREDENTIAL_DIR=/var/lib/voidstation/credentials",
         "VOIDSTATION_MEDIA_CONFIG_FILE=/run/voidstation-media/config.json",
+        "VOIDSTATION_SEARCH_PROVIDER=searxng",
+        "VOIDSTATION_SEARXNG_URL=http://searxng:8080",
       ],
       Labels: {
         "com.docker.compose.project": "voidstation-app",
@@ -346,6 +440,7 @@ async function runPreflight(
   const conversations = join(workspace, "conversations");
   const credentials = join(workspace, "credentials");
   const media = join(workspace, "media");
+  const searxngSecret = join(workspace, "searxng-secret");
   const data = await mkdtemp(join("/dev/shm", "voidstation-preflight-data-"));
   workspaces.push(data);
   const paths = {
@@ -358,6 +453,7 @@ async function runPreflight(
     conversations,
     credentials,
     media,
+    searxngSecret,
   };
   await Promise.all([
     mkdir(bin),
@@ -379,6 +475,11 @@ async function runPreflight(
     writeFile(token, "a-worker-token-with-at-least-thirty-two-characters", {
       mode: 0o600,
     }),
+    writeFile(
+      searxngSecret,
+      "a-searxng-secret-with-at-least-thirty-two-characters\n",
+      { mode: 0o600 },
+    ),
   ]);
   await writeFile(join(media, "radarr.key"), "radarr-fixture-key\n", { mode: 0o600 });
   await writeFile(join(media, "sonarr.key"), "sonarr-fixture-key\n", { mode: 0o600 });
@@ -430,6 +531,21 @@ async function runPreflight(
     ]),
   );
   await writeFile(
+    join(workspace, "searxng-inspect.json"),
+    JSON.stringify([
+      options.searxngInspection?.(paths) ?? deployedSearxng(paths),
+    ]),
+  );
+  await writeFile(
+    join(workspace, "searxng-image.json"),
+    JSON.stringify([
+      options.searxngImageInspection ?? {
+        Id: "sha256:searxng-image-id",
+        RepoDigests: [`searxng/searxng@${searxngDigest}`],
+      },
+    ]),
+  );
+  await writeFile(
     join(workspace, "tailscale.json"),
     JSON.stringify({
       Self: {
@@ -460,10 +576,12 @@ case "$1" in
     "config --format json") cat "$PREFLIGHT_COMPOSE" ;;
     "ps --quiet dashboard") if [ "$PREFLIGHT_POSTDEPLOY" = true ]; then echo dashboard-id; fi ;;
     "ps --quiet assistant-worker") if [ "$PREFLIGHT_POSTDEPLOY" = true ]; then echo worker-id; fi ;;
+    "ps --quiet searxng") if [ "$PREFLIGHT_POSTDEPLOY" = true ]; then echo searxng-id; fi ;;
     *) exit 2 ;;
   esac ;;
   ps) [ "$2" = --quiet ] || exit 2; if [ "$PREFLIGHT_POSTDEPLOY" = true ]; then echo dashboard-id; fi ;;
-  inspect) if [ "$2" = worker-id ]; then cat "$PREFLIGHT_WORKER_INSPECT"; else cat "$PREFLIGHT_INSPECT"; fi ;;
+  image) [ "$2 $3" = "inspect sha256:searxng-image-id" ] || exit 2; cat "$PREFLIGHT_SEARXNG_IMAGE" ;;
+  inspect) case "$2" in worker-id) cat "$PREFLIGHT_WORKER_INSPECT" ;; searxng-id) cat "$PREFLIGHT_SEARXNG_INSPECT" ;; *) cat "$PREFLIGHT_INSPECT" ;; esac ;;
   *) exit 2 ;;
 esac
 `,
@@ -573,7 +691,8 @@ esac
 const lstat = fs.lstatSync;
 fs.lstatSync = function(file, ...args) {
   const stat = lstat.call(this, file, ...args);
-  if (String(file).startsWith(${JSON.stringify(workspace + "/")})) Object.assign(stat, { uid: 1000, gid: 1000 });
+  if (String(file).startsWith(${JSON.stringify(workspace + "/")}) && String(file).endsWith("/searxng-secret")) Object.assign(stat, { uid: Number(process.env.PREFLIGHT_SEARXNG_SECRET_UID ?? 977), gid: 977 });
+  else if (String(file).startsWith(${JSON.stringify(workspace + "/")})) Object.assign(stat, { uid: 1000, gid: 1000 });
   return stat;
 };`,
   );
@@ -637,6 +756,8 @@ syncBuiltinESMExports();`,
         PREFLIGHT_TLS: tls,
         PREFLIGHT_INSPECT: join(workspace, "inspect.json"),
         PREFLIGHT_WORKER_INSPECT: join(workspace, "worker-inspect.json"),
+        PREFLIGHT_SEARXNG_INSPECT: join(workspace, "searxng-inspect.json"),
+        PREFLIGHT_SEARXNG_IMAGE: join(workspace, "searxng-image.json"),
         PREFLIGHT_TAILSCALE: join(workspace, "tailscale.json"),
         PREFLIGHT_SERVE: join(workspace, "serve.json"),
         PREFLIGHT_SAN: join(workspace, "san.txt"),
@@ -937,7 +1058,7 @@ it("rejects an additional service", async () => {
     return configuration;
   });
   expect(result.output).toContain(
-    "must define exactly dashboard and assistant-worker services",
+    "must define exactly dashboard, assistant-worker, and searxng services",
   );
 });
 
@@ -1214,4 +1335,205 @@ it("rejects a capability added to the deployed dashboard", async () => {
     },
   });
   expect(result.output).toContain("dashboard security settings changed");
+});
+
+it("rejects a SearXNG host port publication", async () => {
+  const result = await runPreflight((paths) => {
+    const configuration = lockedDashboard(paths);
+    configuration.services.searxng.ports = [
+      {
+        target: 8080,
+        published: "8080",
+        protocol: "tcp",
+        mode: "ingress",
+        host_ip: "127.0.0.1",
+      },
+    ];
+    return configuration;
+  });
+  expect(result.output).toContain("searxng.ports is not allowed");
+});
+
+it("rejects an unpinned SearXNG image", async () => {
+  const result = await runPreflight((paths) => {
+    const configuration = lockedDashboard(paths);
+    configuration.services.searxng.image = "docker.io/searxng/searxng:latest";
+    return configuration;
+  });
+  expect(result.output).toContain("searxng must use the pinned image");
+});
+
+it("rejects a SearXNG secret passed through the environment", async () => {
+  const result = await runPreflight((paths) => {
+    const configuration = lockedDashboard(paths);
+    configuration.services.searxng.environment = { SEARXNG_SECRET: "x" };
+    return configuration;
+  });
+  expect(result.output).toContain("searxng.environment is not allowed");
+});
+
+it("rejects a SearXNG entrypoint override", async () => {
+  const result = await runPreflight((paths) => {
+    const configuration = lockedDashboard(paths);
+    configuration.services.searxng.entrypoint = ["/bin/sh"];
+    return configuration;
+  });
+  expect(result.output).toContain("fixed secret-file entrypoint");
+});
+
+it("rejects weakened SearXNG hardening", async () => {
+  for (const [change, message] of [
+    [
+      (service: Record<string, any>) => (service.user = "0:0"),
+      "user: 977:977",
+    ],
+    [
+      (service: Record<string, any>) => (service.cap_add = ["NET_ADMIN"]),
+      "searxng.cap_add is not allowed",
+    ],
+    [
+      (service: Record<string, any>) => (service.read_only = false),
+      "read_only: true",
+    ],
+    [
+      (service: Record<string, any>) => (service.tmpfs = ["/tmp"]),
+      "restricted /tmp and /var/cache/searxng tmpfs",
+    ],
+    [
+      (service: Record<string, any>) =>
+        (service.volumes[0].read_only = false),
+      "/etc/searxng has changed or is unsafe",
+    ],
+  ] as const) {
+    const result = await runPreflight((paths) => {
+      const configuration = lockedDashboard(paths);
+      change(configuration.services.searxng);
+      return configuration;
+    });
+    expect(result.output).toContain(message);
+  }
+});
+
+it("rejects a worker without the SearXNG search provider", async () => {
+  const result = await runPreflight((paths) => {
+    const configuration = lockedDashboard(paths);
+    configuration.services["assistant-worker"].environment.VOIDSTATION_SEARXNG_URL =
+      "http://example.com:8080";
+    return configuration;
+  });
+  expect(result.output).toContain(
+    "assistant-worker.environment.VOIDSTATION_SEARXNG_URL must be http://searxng:8080",
+  );
+});
+
+it("rejects a SearXNG secret file with the wrong owner or mode", async () => {
+  const wrongOwner = await runPreflight(lockedDashboard, {
+    setup: async () => ({ PREFLIGHT_SEARXNG_SECRET_UID: "1000" }),
+  });
+  expect(wrongOwner.output).toContain(
+    "SearXNG secret file must be owned by UID/GID 977 with mode 0600",
+  );
+  const wrongMode = await runPreflight(lockedDashboard, {
+    setup: async (paths) => {
+      await chmod(paths.searxngSecret, 0o644);
+    },
+  });
+  expect(wrongMode.output).toContain(
+    "SearXNG secret file must be owned by UID/GID 977 with mode 0600",
+  );
+});
+
+it("rejects a short SearXNG secret", async () => {
+  const result = await runPreflight(lockedDashboard, {
+    setup: async (paths) => {
+      await writeFile(paths.searxngSecret, "  too short  \n", { mode: 0o600 });
+    },
+  });
+  expect(result.output).toContain(
+    "SearXNG secret file must contain at least 32 non-whitespace characters",
+  );
+});
+
+it("rejects a SearXNG secret stored inside another state directory", async () => {
+  const result = await runPreflight((paths) => {
+    const configuration = lockedDashboard(paths);
+    configuration.services.searxng.volumes[1].source = join(
+      paths.auth,
+      "searxng-secret",
+    );
+    return configuration;
+  }, {
+    setup: async (paths) => {
+      await writeFile(
+        join(paths.auth, "searxng-secret"),
+        "a-searxng-secret-with-at-least-thirty-two-characters\n",
+        { mode: 0o600 },
+      );
+    },
+  });
+  expect(result.output).toContain(
+    "auth data and SearXNG secret must use separate paths",
+  );
+});
+
+it("rejects a deployed SearXNG with its secret in the environment", async () => {
+  const result = await runPreflight(lockedDashboard, {
+    postDeploy: true,
+    searxngInspection: (paths) => {
+      const inspection = deployedSearxng(paths);
+      inspection.Config.Env.push("SEARXNG_SECRET=leaked");
+      return inspection;
+    },
+  });
+  expect(result.output).toContain(
+    "searxng has an unapproved runtime environment variable",
+  );
+});
+
+it("rejects a deployed SearXNG host port publication", async () => {
+  const result = await runPreflight(lockedDashboard, {
+    postDeploy: true,
+    searxngInspection: (paths) => {
+      const inspection = deployedSearxng(paths);
+      inspection.NetworkSettings.Ports["8080/tcp"] = [
+        { HostIp: "0.0.0.0", HostPort: "8080" },
+      ];
+      return inspection;
+    },
+  });
+  expect(result.output).toContain("searxng has a host port publication");
+});
+
+it("rejects a deployed SearXNG image that is not the pinned digest", async () => {
+  const result = await runPreflight(lockedDashboard, {
+    postDeploy: true,
+    searxngImageInspection: {
+      Id: "sha256:searxng-image-id",
+      RepoDigests: ["searxng/searxng@sha256:other"],
+    },
+  });
+  expect(result.output).toContain("not the pinned image digest");
+});
+
+it("rejects a deployed SearXNG with an added capability or writable settings", async () => {
+  const capability = await runPreflight(lockedDashboard, {
+    postDeploy: true,
+    searxngInspection: (paths) => {
+      const inspection = deployedSearxng(paths);
+      inspection.HostConfig.CapAdd = ["NET_RAW"];
+      return inspection;
+    },
+  });
+  expect(capability.output).toContain("searxng security settings changed");
+  const writable = await runPreflight(lockedDashboard, {
+    postDeploy: true,
+    searxngInspection: (paths) => {
+      const inspection = deployedSearxng(paths);
+      inspection.Mounts[0].RW = true;
+      return inspection;
+    },
+  });
+  expect(writable.output).toContain(
+    "searxng mount at /etc/searxng changed or is unsafe",
+  );
 });

@@ -119,3 +119,18 @@ it("reports failed postdeploy verification without announcing success", () => {
   expect(result.status).not.toBe(0);
   expect(result.stdout).not.toContain("passed post-deploy inspection");
 });
+
+it("pulls the pinned searxng image after predeploy checks and starts it before the worker", () => {
+  const result = update();
+  expect(result.status, result.stderr).toBe(0);
+  const pull = "docker compose --project-name voidstation-app pull searxng";
+  const build = "docker compose --project-name voidstation-app build dashboard assistant-worker";
+  const staticCheck = "node scripts/deployment-preflight.mjs";
+  const searxngStart = "docker compose --project-name voidstation-app up --no-build --pull never -d --no-deps searxng";
+  const workerStart = "docker compose --project-name voidstation-app up --no-build -d --no-deps assistant-worker";
+  expect(result.commands.indexOf("node scripts/deployment-preflight.mjs --predeploy")).toBeLessThan(result.commands.indexOf(pull));
+  expect(result.commands.indexOf(pull)).toBeLessThan(result.commands.indexOf(build));
+  expect(result.commands.indexOf(staticCheck)).toBeLessThan(result.commands.indexOf(searxngStart));
+  expect(result.commands.indexOf(searxngStart)).toBeLessThan(result.commands.indexOf(workerStart));
+  expect(result.commands.some((command) => command.includes("--force-recreate") && command.includes("searxng"))).toBe(false);
+});

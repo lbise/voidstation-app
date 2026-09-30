@@ -6,6 +6,7 @@ import {
   ChevronRight,
   CircleAlert,
   CircleDashed,
+  ExternalLink,
   Menu,
   MessageSquarePlus,
   Radio,
@@ -72,7 +73,9 @@ import type {
   AssistantModelOption,
   AssistantProviderId,
   AssistantSettings,
+  WebResult,
 } from "@/lib/assistant-contract";
+import { messageVideos, verifiedVideoKeys, type VideoEmbed } from "@/lib/video-embed";
 
 type RequestResult<T> =
   | { ok: true; value: T }
@@ -237,6 +240,70 @@ function AssistantMarkdown({ text }: { text: string }) {
   );
 }
 
+function VideoPlayer({ video, title }: { video: VideoEmbed; title: string }) {
+  const service = video.provider === "youtube" ? "YouTube" : "Vimeo";
+  return (
+    <figure className="assistant-video">
+      <div className="assistant-video__frame">
+        <iframe
+          src={video.embedUrl}
+          title={title}
+          loading="lazy"
+          // The app sends no-referrer; YouTube refuses embeds without a referrer origin.
+          referrerPolicy="strict-origin-when-cross-origin"
+          sandbox="allow-scripts allow-same-origin allow-presentation allow-popups allow-popups-to-escape-sandbox"
+          allow="encrypted-media; picture-in-picture; fullscreen"
+          allowFullScreen
+        />
+      </div>
+      <figcaption>
+        <a href={video.watchUrl} target="_blank" rel="noreferrer">
+          Open on {service}
+          <ExternalLink aria-hidden="true" />
+        </a>
+      </figcaption>
+    </figure>
+  );
+}
+
+function isWebResult(value: unknown): value is WebResult {
+  return isRecord(value) && (value.kind === "webSearch" || value.kind === "webPage");
+}
+
+function hostLabel(url: string): string {
+  try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return url; }
+}
+
+function WebResultDetail({ result }: { result: WebResult }) {
+  if (result.kind === "webSearch") {
+    return result.results.length === 0 ? <p className="assistant-web-empty">No results.</p> : (
+      <ol className="assistant-web-results">
+        {result.results.map((hit) => (
+          <li key={hit.url}>
+            <a href={hit.url} target="_blank" rel="noreferrer">{hit.title}</a>
+            <span>{hostLabel(hit.url)}{hit.source ? ` · ${hit.source}` : ""}</span>
+            {hit.snippet && <p>{hit.snippet}</p>}
+          </li>
+        ))}
+      </ol>
+    );
+  }
+  if (result.kind === "webPage") {
+    return (
+      <div className="assistant-web-results">
+        <a href={result.url} target="_blank" rel="noreferrer">{result.title ?? result.url}</a>
+        <span>{result.siteName ?? hostLabel(result.url)} · {result.characters.toLocaleString()} characters{result.truncated ? " (truncated)" : ""}</span>
+        {result.excerpt && <p>{result.excerpt}</p>}
+      </div>
+    );
+  }
+  return <p className="assistant-web-empty">{result.message}</p>;
+}
+
+function isWebError(name: string, result: unknown): result is WebResult {
+  return name.startsWith("web_") && isRecord(result) && result.kind === "error" && typeof result.message === "string";
+}
+
 function MediaResultCard({ entry }: { entry: SavedMediaResult }) {
   const result = entry.result;
   return (
@@ -275,7 +342,9 @@ function ToolActivity({ group }: { group: Extract<ThreadGroup, { type: "activity
               <strong>Parameters</strong>
               <pre>{JSON.stringify(entry.value.parameters, null, 2)}</pre>
               <strong>Result</strong>
-              <pre>{JSON.stringify(entry.value.result, null, 2)}</pre>
+              {isWebResult(entry.value.result) || isWebError(entry.value.name, entry.value.result)
+                ? <WebResultDetail result={entry.value.result} />
+                : <pre>{JSON.stringify(entry.value.result, null, 2)}</pre>}
             </article>
           ))}
         </div>
@@ -288,9 +357,10 @@ function AssistantMark() {
   return <span className="assistant-avatar" aria-hidden="true">V<span>/</span></span>;
 }
 
-function ConversationEntry({ entry }: { entry: ThreadGroup }) {
+function ConversationEntry({ entry, verifiedVideos }: { entry: ThreadGroup; verifiedVideos: ReadonlySet<string> }) {
   if (entry.type === "activity") return <ToolActivity group={entry} />;
   const message = entry.value;
+  const videos = message.role === "assistant" ? messageVideos(message.text, verifiedVideos) : [];
   return (
     <Message align={message.role === "user" ? "end" : "start"}>
       <MessageContent>
@@ -301,6 +371,11 @@ function ConversationEntry({ entry }: { entry: ThreadGroup }) {
         <Bubble align={message.role === "user" ? "end" : "start"} variant={message.role === "user" ? "secondary" : "ghost"}>
           <BubbleContent className={message.role === "assistant" ? "assistant-markdown" : undefined}>
             {message.role === "assistant" ? <AssistantMarkdown text={message.text} /> : message.text}
+            {videos.length > 0 && (
+              <div className="assistant-videos">
+                {videos.map((video, index) => <VideoPlayer key={video.key} video={video} title={`Video ${index + 1} from the Assistant's reply`} />)}
+              </div>
+            )}
           </BubbleContent>
         </Bubble>
       </MessageContent>
@@ -677,6 +752,7 @@ export function Assistant() {
   const entries = activeConversation ? conversationEntries(activeConversation) : [];
   if (activeConversation && optimisticMessage) entries.push({ type: "message", value: optimisticMessage });
   const groupedEntries = groupThreadEntries(entries);
+  const verifiedVideos = verifiedVideoKeys(activeConversation?.toolCalls ?? []);
   const savedProvider = settings?.providers.find((provider) => provider.id === settings?.provider);
   const savedModel = savedProvider?.models.find((model) => model.id === settings?.model);
   const modelLabel = settings ? `${savedProvider?.name ?? settings.provider} · ${savedModel?.name ?? settings.model}` : "Provider and model";
@@ -870,7 +946,7 @@ export function Assistant() {
               <EmptyMedia><AssistantMark /></EmptyMedia>
               <EmptyHeader>
                 <EmptyTitle>Start a conversation</EmptyTitle>
-                <EmptyDescription>Look up movies and series, check your managed library, and read Radarr and Sonarr status. This Assistant is read-only.</EmptyDescription>
+                <EmptyDescription>Look up movies and series, manage your library through Radarr and Sonarr, and ask anything that needs a look on the web.</EmptyDescription>
               </EmptyHeader>
               <Button type="button" onClick={createConversation} disabled={isCreating}>
                 <MessageSquarePlus data-icon="inline-start" aria-hidden="true" />
@@ -888,10 +964,10 @@ export function Assistant() {
               <EmptyMedia><AssistantMark /></EmptyMedia>
               <EmptyHeader>
                 <EmptyTitle>What's in your library?</EmptyTitle>
-                <EmptyDescription>Look up movies and series, check your managed library, and read Radarr and Sonarr status. This Assistant is read-only.</EmptyDescription>
+                <EmptyDescription>Look up movies and series, manage your library through Radarr and Sonarr, and ask anything that needs a look on the web.</EmptyDescription>
               </EmptyHeader>
               <div className="assistant-example-prompts" aria-label="Example prompts">
-                {["Is Dune in my library?", "Check the status of Severance"].map((prompt) => (
+                {["Is Dune in my library?", "Check the status of Severance", "Find the trailer for Dune: Part Three"].map((prompt) => (
                   <Button key={prompt} type="button" variant="outline" disabled={composerDisabled} onClick={() => { updateText(prompt); composer.current?.focus(); }}>{prompt}</Button>
                 ))}
               </div>
@@ -906,7 +982,7 @@ export function Assistant() {
                       const id = entry.type === "activity" ? entry.id : `message-${entry.value.id}`;
                       return (
                         <MessageScrollerItem key={id} messageId={id}>
-                          <ConversationEntry entry={entry} />
+                          <ConversationEntry entry={entry} verifiedVideos={verifiedVideos} />
                         </MessageScrollerItem>
                       );
                     })}

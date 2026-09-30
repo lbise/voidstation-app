@@ -120,6 +120,9 @@ services:
       VOIDSTATION_CONVERSATION_DIR: "/var/lib/voidstation/conversations"
       VOIDSTATION_CREDENTIAL_DIR: "/var/lib/voidstation/credentials"
       VOIDSTATION_MEDIA_CONFIG_FILE: "/run/voidstation-media/config.json"
+      # Web search goes through the internal SearXNG service only.
+      VOIDSTATION_SEARCH_PROVIDER: "searxng"
+      VOIDSTATION_SEARXNG_URL: "http://searxng:8080"
     read_only: true
     cap_drop:
       - ALL
@@ -149,6 +152,45 @@ services:
       - type: bind
         source: "${VOIDSTATION_MEDIA_CONFIG_DIRECTORY:?Set VOIDSTATION_MEDIA_CONFIG_DIRECTORY in .env}"
         target: /run/voidstation-media
+        read_only: true
+        bind:
+          create_host_path: false
+
+  # Internal metasearch backend for the Assistant's web search. It has no host
+  # port; only containers on the Compose bridge can reach http://searxng:8080.
+  searxng:
+    # Pinned by tag and multi-arch index digest. Update both together.
+    image: "docker.io/searxng/searxng:2026.9.30-a9d990033@sha256:a07a5cd2da2c63d66e559f9e4d3a3db106cfc6c32fb0ac70abe91cc28bcd7350"
+    restart: unless-stopped
+    # The image's own unprivileged searxng user, distinct from host UID 1000.
+    user: "977:977"
+    # Read the server secret from its private file so it never appears in
+    # .env, Compose output, or docker inspect, then run the image entrypoint.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - 'SEARXNG_SECRET="$$(cat /run/voidstation-searxng/secret)" && [ "$${#SEARXNG_SECRET}" -ge 32 ] || { echo "SearXNG secret file is missing or shorter than 32 characters." >&2; exit 78; }; export SEARXNG_SECRET; exec /usr/local/searxng/entrypoint.sh'
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      # SearXNG keeps its SQLite engine caches in /tmp.
+      - /tmp:size=64m,noexec,nosuid,nodev
+      # Covers the image's data VOLUME so Docker creates no anonymous volume.
+      - /var/cache/searxng:size=16m,noexec,nosuid,nodev,uid=977,gid=977,mode=0700
+    volumes:
+      # Committed settings. Covers the image's config VOLUME, read-only.
+      - type: bind
+        source: ./deploy/searxng
+        target: /etc/searxng
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${VOIDSTATION_SEARXNG_SECRET_FILE:?Set VOIDSTATION_SEARXNG_SECRET_FILE in .env}"
+        target: /run/voidstation-searxng/secret
         read_only: true
         bind:
           create_host_path: false

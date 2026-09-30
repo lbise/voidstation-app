@@ -103,6 +103,37 @@ it("renders assistant replies as safe GitHub-flavored Markdown", async () => {
   expect(log.querySelector("script")).toBeNull();
 });
 
+it("embeds only videos that came from web tool results and lists search results in the activity", async () => {
+  const verified = "https://www.youtube.com/watch?v=abcDEF12345";
+  const invented = "https://youtu.be/zzzzzzzzzzz";
+  details.set(conversation.id, {
+    ...conversation,
+    toolCalls: [{
+      id: "search-1", turnId: "turn-1", name: "web_search", status: "complete",
+      parameters: { query: "Dune Part Three trailer", category: "videos" },
+      result: { kind: "webSearch", query: "Dune Part Three trailer", category: "videos", results: [
+        { title: "Dune: Part Three | Official Trailer", url: verified, snippet: "The official trailer.", source: "youtube" },
+      ] },
+    }],
+    messages: [{ id: "message-1", role: "assistant", text: `Here it is:\n\n[Official trailer](${verified})\n\nAlso maybe [this one](${invented}).` }],
+    timeline: [{ type: "toolCall", id: "search-1" }, { type: "message", id: "message-1" }],
+  });
+  await openChat();
+  const log = screen.getByRole("log");
+  const frames = log.querySelectorAll("iframe");
+  expect(frames).toHaveLength(1);
+  expect(frames[0]!.getAttribute("src")).toBe("https://www.youtube-nocookie.com/embed/abcDEF12345?rel=0");
+  expect(frames[0]!.getAttribute("referrerpolicy")).toBe("strict-origin-when-cross-origin");
+  expect(frames[0]!.getAttribute("sandbox")).toContain("allow-scripts");
+  expect(within(log).getByRole("link", { name: "this one" }).getAttribute("href")).toBe(invented);
+  expect(within(log).getByRole("link", { name: /Open on YouTube/ }).getAttribute("href")).toBe(verified);
+
+  fireEvent.click(within(log).getByRole("button", { name: /Searched the web/ }));
+  const result = await within(log).findByRole("link", { name: "Dune: Part Three | Official Trailer" });
+  expect(result.getAttribute("href")).toBe(verified);
+  expect(within(log).getByText("The official trailer.")).toBeTruthy();
+});
+
 it("submits once on Enter and disables the composer while sending", async () => {
   const input = await openChat();
   fireEvent.change(input, { target: { value: "List my series" } });

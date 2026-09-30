@@ -1,0 +1,67 @@
+# SearXNG settings for the Assistant's internal web search.
+#
+# Compose mounts this directory read-only at /etc/searxng. The only client is
+# assistant-worker on the private Compose network; SearXNG has no host port.
+# Do not put the server secret here. The container reads it at startup from
+# the private file named by VOIDSTATION_SEARXNG_SECRET_FILE (SEARXNG_SECRET).
+# Reference: https://docs.searxng.org/admin/settings/
+use_default_settings:
+  engines:
+    # Only these engines are loaded. Categories the worker requests:
+    # general, videos, news. Several general engines spread the load because
+    # individual engines rate-limit or CAPTCHA a single home IP.
+    keep_only:
+      - duckduckgo
+      - brave
+      - google
+      - bing
+      - mojeek
+      - wikipedia
+      - youtube
+      - duckduckgo news
+      - bing news
+      - brave.news
+
+general:
+  debug: false
+  instance_name: "Voidstation search"
+  privacypolicy_url: false
+  donation_url: false
+  contact_url: false
+  enable_metrics: false
+  open_metrics: ""
+
+search:
+  # 0 = no filtering. The worker passes safesearch per request when it needs it.
+  safe_search: 0
+  autocomplete: ""
+  favicon_resolver: ""
+  default_lang: "auto"
+  # json is required by the worker's search provider.
+  formats:
+    - html
+    - json
+
+server:
+  # Internal single-user instance: no limiter, bot detection, or Valkey.
+  limiter: false
+  public_instance: false
+  image_proxy: false
+  base_url: false
+  method: "GET"
+
+valkey:
+  url: false
+
+outgoing:
+  request_timeout: 4.0
+  max_request_timeout: 10.0
+
+# google and bing are disabled upstream by default, mojeek is inactive.
+engines:
+  - name: google
+    disabled: false
+  - name: bing
+    disabled: false
+  - name: mojeek
+    inactive: false

@@ -23,7 +23,10 @@ A previously successful server measurement retained for display after refreshing
 ## Assistant and media
 
 **Assistant**:
-Voidstation's conversational interface for requesting server tasks through explicitly enabled capabilities.
+Voidstation's conversational interface for requesting server tasks and web lookups through explicitly enabled capabilities.
+
+**Web lookup**:
+A search of the public web or a read of one public web page, done by the Assistant to answer the owner. Its results are untrusted third-party content and never authorize a media action.
 
 **Assistant skill**:
 An owner-installed set of instructions and supporting resources for a task the assistant can perform. Installing a skill does not itself grant permission to execute every action it describes.

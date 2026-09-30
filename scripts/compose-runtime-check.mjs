@@ -33,6 +33,7 @@ function main() {
     `VOIDSTATION_CONVERSATION_DIRECTORY=${fixture}/conversations`,
     `VOIDSTATION_CREDENTIAL_DIRECTORY=${fixture}/credentials`,
     `VOIDSTATION_MEDIA_CONFIG_DIRECTORY=${fixture}/media`,
+    `VOIDSTATION_SEARXNG_SECRET_FILE=${fixture}/searxng-secret`,
     `VOIDSTATION_ROOT_FILESYSTEM_PATH=${fixture}/root`,
     `VOIDSTATION_DATA_FILESYSTEM_PATH=${fixture}/data`,
     "",
@@ -43,8 +44,8 @@ function main() {
     });
     const configuration = JSON.parse(output);
     const services = configuration.services ?? {};
-    if (JSON.stringify(Object.keys(services).sort()) !== JSON.stringify(["assistant-worker", "dashboard"])) {
-      fail("Effective Compose configuration must contain only dashboard and assistant-worker.");
+    if (JSON.stringify(Object.keys(services).sort()) !== JSON.stringify(["assistant-worker", "dashboard", "searxng"])) {
+      fail("Effective Compose configuration must contain only dashboard, assistant-worker, and searxng.");
     }
     const dashboard = services.dashboard;
     const worker = services["assistant-worker"];
@@ -72,6 +73,8 @@ function main() {
       VOIDSTATION_CONVERSATION_DIR: "/var/lib/voidstation/conversations",
       VOIDSTATION_CREDENTIAL_DIR: "/var/lib/voidstation/credentials",
       VOIDSTATION_MEDIA_CONFIG_FILE: "/run/voidstation-media/config.json",
+      VOIDSTATION_SEARCH_PROVIDER: "searxng",
+      VOIDSTATION_SEARXNG_URL: "http://searxng:8080",
     };
     if (Object.keys(workerEnvironment).length !== Object.keys(expectedWorkerEnvironment).length ||
         Object.entries(expectedWorkerEnvironment).some(([name, value]) => workerEnvironment[name] !== value)) {
@@ -90,6 +93,21 @@ function main() {
           !service.security_opt?.includes("no-new-privileges:true") || !service.tmpfs?.includes("/tmp:size=16m,noexec,nosuid")) {
         fail("Effective service hardening changed.");
       }
+    }
+    const searxng = services.searxng;
+    if (!/^docker\.io\/searxng\/searxng:[^@]+@sha256:[0-9a-f]{64}$/.test(searxng.image ?? "") || searxng.build != null) {
+      fail("SearXNG must use a tag- and digest-pinned image without a build.");
+    }
+    if (searxng.ports != null || searxng.environment != null) {
+      fail("SearXNG effective configuration publishes a port or sets environment values.");
+    }
+    if (searxng.user !== "977:977" || searxng.read_only !== true || JSON.stringify(searxng.cap_drop) !== JSON.stringify(["ALL"]) ||
+        !searxng.security_opt?.includes("no-new-privileges:true") || searxng.cap_add != null) {
+      fail("SearXNG effective hardening changed.");
+    }
+    const searxngMounts = (searxng.volumes ?? []).map((volume) => `${volume.source}:${volume.target}:${volume.read_only === true}`).sort();
+    if (JSON.stringify(searxngMounts) !== JSON.stringify([`${fixture}/searxng-secret:/run/voidstation-searxng/secret:true`, `${path.join(root, "deploy", "searxng")}:/etc/searxng:true`].sort())) {
+      fail("SearXNG effective mounts changed.");
     }
   } finally {
     rmSync(temporary, { recursive: true, force: true });

@@ -10,10 +10,29 @@ import { fileURLToPath } from "node:url";
 const projectName = "voidstation-app";
 const dashboardServiceName = "dashboard";
 const workerServiceName = "assistant-worker";
+const searxngServiceName = "searxng";
+// Pinned by tag and multi-arch index digest; keep in sync with compose.yaml.
+const searxngImage =
+  "docker.io/searxng/searxng:2026.9.30-a9d990033@sha256:a07a5cd2da2c63d66e559f9e4d3a3db106cfc6c32fb0ac70abe91cc28bcd7350";
+// The image's built-in unprivileged searxng user, distinct from host UID 1000.
+const searxngUid = 977;
+const searxngPort = 8080;
+// Reads the private secret file into SEARXNG_SECRET, then runs the image's
+// own entrypoint. The secret never appears in Compose or container metadata.
+const searxngEntrypoint = [
+  "/bin/sh",
+  "-c",
+  'SEARXNG_SECRET="$(cat /run/voidstation-searxng/secret)" && [ "${#SEARXNG_SECRET}" -ge 32 ] || { echo "SearXNG secret file is missing or shorter than 32 characters." >&2; exit 78; }; export SEARXNG_SECRET; exec /usr/local/searxng/entrypoint.sh',
+];
+const searxngTmpfs = [
+  "/tmp:size=64m,noexec,nosuid,nodev",
+  `/var/cache/searxng:size=16m,noexec,nosuid,nodev,uid=${searxngUid},gid=${searxngUid},mode=0700`,
+];
 const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
+const searxngSettingsSource = path.join(repositoryRoot, "deploy", "searxng");
 const dashboardPort = 3000;
 const lanDashboardPort = 3443;
 const workerPort = 3001;
@@ -34,6 +53,8 @@ const containerPaths = {
     radarr: "/run/voidstation-media/radarr.key",
     sonarr: "/run/voidstation-media/sonarr.key",
   },
+  searxngSettings: "/etc/searxng",
+  searxngSecret: "/run/voidstation-searxng/secret",
 };
 
 function fail(message) {
@@ -222,10 +243,12 @@ function validateOrigin(value, description, hostname, port) {
 function validateServiceShape(configuration, dashboard, worker) {
   if (
     JSON.stringify(Object.keys(configuration.services ?? {}).sort()) !==
-    JSON.stringify([dashboardServiceName, workerServiceName].sort())
+    JSON.stringify(
+      [dashboardServiceName, workerServiceName, searxngServiceName].sort(),
+    )
   )
     fail(
-      "compose.yaml must define exactly dashboard and assistant-worker services.",
+      "compose.yaml must define exactly dashboard, assistant-worker, and searxng services.",
     );
   const allowed = new Set([
     "build",
@@ -543,6 +566,8 @@ function validateWorkerConfiguration(service, dashboardTokenSource) {
     VOIDSTATION_CONVERSATION_DIR: containerPaths.conversationDirectory,
     VOIDSTATION_CREDENTIAL_DIR: containerPaths.credentialDirectory,
     VOIDSTATION_MEDIA_CONFIG_FILE: containerPaths.mediaConfig,
+    VOIDSTATION_SEARCH_PROVIDER: "searxng",
+    VOIDSTATION_SEARXNG_URL: `http://${searxngServiceName}:${searxngPort}`,
   };
   for (const [name, expected] of Object.entries(required))
     if (String(environment[name] ?? "") !== expected)
@@ -606,6 +631,78 @@ function validateWorkerConfiguration(service, dashboardTokenSource) {
     credentials,
     media: media.source,
   };
+}
+function validateSearxngConfiguration(service) {
+  const allowed = new Set([
+    "image",
+    "restart",
+    "user",
+    "read_only",
+    "cap_drop",
+    "security_opt",
+    "tmpfs",
+    "volumes",
+    "command",
+    "entrypoint",
+    "networks",
+  ]);
+  for (const key of Object.keys(service ?? {}))
+    if (!allowed.has(key))
+      fail(`${searxngServiceName}.${key} is not allowed in this deployment.`);
+  if (service.image !== searxngImage)
+    fail(`${searxngServiceName} must use the pinned image ${searxngImage}.`);
+  if (JSON.stringify(service.networks) !== JSON.stringify({ default: null }))
+    fail(`${searxngServiceName} must use only Compose's default bridge network.`);
+  // Compose may escape $ as $$ in its resolved output; both mean the same.
+  if (
+    service.command != null ||
+    !Array.isArray(service.entrypoint) ||
+    !sameArray(
+      service.entrypoint.map((part) =>
+        typeof part === "string" ? part.replaceAll("$$", "$") : part,
+      ),
+      searxngEntrypoint,
+    )
+  )
+    fail(
+      `${searxngServiceName} must use only the fixed secret-file entrypoint and no command.`,
+    );
+  if (
+    service.restart !== "unless-stopped" ||
+    service.read_only !== true ||
+    String(service.user) !== `${searxngUid}:${searxngUid}`
+  )
+    fail(
+      `${searxngServiceName} must use restart: unless-stopped, read_only: true, and user: ${searxngUid}:${searxngUid}.`,
+    );
+  if (!sameArray(service.cap_drop, ["ALL"]))
+    fail(`${searxngServiceName} must keep cap_drop: [ALL].`);
+  if (!sameArray(service.security_opt, ["no-new-privileges:true"]))
+    fail(
+      `${searxngServiceName} must keep security_opt: [no-new-privileges:true].`,
+    );
+  if (!sameArray(service.tmpfs, searxngTmpfs))
+    fail(
+      `${searxngServiceName} must keep its restricted /tmp and /var/cache/searxng tmpfs mounts.`,
+    );
+  const volumes = requireArray(service.volumes, `${searxngServiceName}.volumes`);
+  if (volumes.length !== 2)
+    fail(
+      `${searxngServiceName} must mount only its committed settings and secret file.`,
+    );
+  const byTarget = new Map(volumes.map((volume) => [volume?.target, volume]));
+  if (byTarget.size !== volumes.length)
+    fail(`${searxngServiceName} has duplicate mounts.`);
+  validateVolume(
+    byTarget.get(containerPaths.searxngSettings),
+    containerPaths.searxngSettings,
+    searxngSettingsSource,
+  );
+  const secret = byTarget.get(containerPaths.searxngSecret);
+  if (typeof secret?.source !== "string")
+    fail(`The bind mount for ${containerPaths.searxngSecret} has changed or is unsafe.`);
+  validateVolume(secret, containerPaths.searxngSecret, secret.source);
+  return { settings: searxngSettingsSource, secret: secret.source };
 }
 function checkedPath(source, description, directory) {
   if (
@@ -724,6 +821,73 @@ function validateWorkerState(worker) {
       fail(`${description} must be owned by UID/GID 1000 with mode 0700.`);
   }
   validateMediaConfiguration(worker.media);
+}
+function validateSearxngState(searxng, workerToken) {
+  const directory = checkedPath(
+    searxng.settings,
+    "SearXNG settings directory",
+    true,
+  );
+  // The container's UID 977 reads the committed settings through their
+  // "other" permission bits.
+  if ((directory.mode & 0o005) !== 0o005 || (directory.mode & 0o002) !== 0)
+    fail(
+      "SearXNG settings directory must be readable by others and not world-writable.",
+    );
+  const entries = fs.readdirSync(searxng.settings);
+  if (entries.length !== 1 || entries[0] !== "settings.yml")
+    fail("SearXNG settings directory must contain only settings.yml.");
+  const settingsPath = path.join(searxng.settings, "settings.yml");
+  const file = checkedPath(settingsPath, "SearXNG settings file", false);
+  if ((file.mode & 0o004) === 0 || (file.mode & 0o002) !== 0)
+    fail(
+      "SearXNG settings file must be readable by others and not world-writable.",
+    );
+  const settings = fs.readFileSync(settingsPath, "utf8");
+  if (/^\s*secret_key\s*:/m.test(settings))
+    fail(
+      "SearXNG settings must not contain secret_key; use VOIDSTATION_SEARXNG_SECRET_FILE.",
+    );
+  for (const [pattern, description] of [
+    [/^use_default_settings:/m, "use_default_settings"],
+    [/^\s+-\s*json\s*$/m, "the json search format"],
+    [/^\s+limiter:\s*false\s*$/m, "limiter: false"],
+    [/^\s+public_instance:\s*false\s*$/m, "public_instance: false"],
+  ])
+    if (!pattern.test(settings))
+      fail(`SearXNG settings must configure ${description}.`);
+  if (searxng.secret === workerToken)
+    fail("SearXNG secret file must be separate from the worker token file.");
+  const secret = checkedPath(searxng.secret, "SearXNG secret file", false);
+  if (
+    secret.uid !== searxngUid ||
+    secret.gid !== searxngUid ||
+    (secret.mode & 0o777) !== 0o600
+  )
+    fail(
+      `SearXNG secret file must be owned by UID/GID ${searxngUid} with mode 0600.`,
+    );
+}
+function validateSearxngRuntimeAccess(searxng) {
+  // Read as the container UID. Only the non-whitespace length leaves the check.
+  const length = runAsRoot(
+    "setpriv",
+    [
+      `--reuid=${searxngUid}`,
+      `--regid=${searxngUid}`,
+      "--clear-groups",
+      "/bin/sh",
+      "-c",
+      'exec < "$1" || exit 1; tr -d "[:space:]" | wc -c',
+      "searxng-secret-check",
+      searxng.secret,
+    ],
+    `Checking the SearXNG secret file as UID/GID ${searxngUid}`,
+  ).trim();
+  if (!/^\d+$/.test(length) || Number(length) < 32)
+    fail(
+      "SearXNG secret file must contain at least 32 non-whitespace characters.",
+    );
 }
 function validateMediaEndpoint(value, service) {
   if (typeof value !== "string" || !value.trim() || value !== value.trim())
@@ -862,7 +1026,7 @@ function pathsOverlap(first, second) {
   );
 }
 
-function validateSeparateStatePaths(probes, worker) {
+function validateSeparateStatePaths(probes, worker, searxng) {
   const statePaths = [
     ["auth data", probes.auth],
     ["conversation state", worker.conversations],
@@ -870,6 +1034,7 @@ function validateSeparateStatePaths(probes, worker) {
     ["media configuration", worker.media],
     ["Tailscale TLS", probes.tls],
     ["LAN TLS", probes.lanTls],
+    ["SearXNG secret", searxng.secret],
   ];
   for (let index = 0; index < statePaths.length; index += 1) {
     for (let other = index + 1; other < statePaths.length; other += 1) {
@@ -1599,6 +1764,8 @@ function validateWorkerInspection(container, worker) {
     VOIDSTATION_CONVERSATION_DIR: containerPaths.conversationDirectory,
     VOIDSTATION_CREDENTIAL_DIR: containerPaths.credentialDirectory,
     VOIDSTATION_MEDIA_CONFIG_FILE: containerPaths.mediaConfig,
+    VOIDSTATION_SEARCH_PROVIDER: "searxng",
+    VOIDSTATION_SEARXNG_URL: `http://${searxngServiceName}:${searxngPort}`,
   };
   const environment = environmentFromInspection(container);
   for (const [name, value] of Object.entries(expectedEnvironment))
@@ -1644,6 +1811,114 @@ function validateWorkerInspection(container, worker) {
       fail(
         `The deployed assistant-worker mount at ${destination} changed or is unsafe.`,
       );
+  }
+}
+function tmpfsOptionsMatch(actual, expected) {
+  // Docker may add "rw" and normalize the size unit.
+  const normalize = (value) =>
+    String(value ?? "")
+      .split(",")
+      .filter((option) => option && option !== "rw")
+      .map((option) => {
+        const size = /^size=(\d+)([kmg]?)$/i.exec(option);
+        if (!size) return option;
+        const unit = { "": 1, k: 1024, m: 1024 ** 2, g: 1024 ** 3 };
+        return `size=${Number(size[1]) * unit[size[2].toLowerCase()]}`;
+      })
+      .sort();
+  return sameArray(normalize(actual), normalize(expected));
+}
+function validateSearxngInspection(container, searxng, imageInspection) {
+  if (!container?.State?.Running || container.State.Restarting)
+    fail("The deployed searxng is not running.");
+  const hostConfig = container?.HostConfig;
+  if (
+    container.Config?.User !== `${searxngUid}:${searxngUid}` ||
+    hostConfig?.ReadonlyRootfs !== true ||
+    hostConfig?.Privileged !== false ||
+    !sameArray(hostConfig?.CapDrop, ["ALL"]) ||
+    (hostConfig?.CapAdd != null &&
+      (!Array.isArray(hostConfig.CapAdd) || hostConfig.CapAdd.length > 0)) ||
+    !sameArray(hostConfig?.SecurityOpt, ["no-new-privileges:true"])
+  )
+    fail("The deployed searxng security settings changed.");
+  const expectedTmpfs = Object.fromEntries(
+    searxngTmpfs.map((entry) => {
+      const separator = entry.indexOf(":");
+      return [entry.slice(0, separator), entry.slice(separator + 1)];
+    }),
+  );
+  const tmpfs = hostConfig?.Tmpfs;
+  if (
+    !tmpfs ||
+    JSON.stringify(Object.keys(tmpfs).sort()) !==
+      JSON.stringify(Object.keys(expectedTmpfs).sort()) ||
+    Object.entries(expectedTmpfs).some(
+      ([target, options]) => !tmpfsOptionsMatch(tmpfs[target], options),
+    )
+  )
+    fail("The deployed searxng tmpfs mounts changed.");
+  if (
+    Object.keys(hostConfig?.PortBindings ?? {}).length ||
+    Object.values(container.NetworkSettings?.Ports ?? {}).some(
+      (bindings) => bindings !== null,
+    )
+  )
+    fail("The deployed searxng has a host port publication.");
+  const digest = searxngImage.slice(searxngImage.indexOf("@") + 1);
+  const repoDigests = imageInspection?.RepoDigests;
+  if (
+    container.Config?.Image !== searxngImage ||
+    imageInspection?.Id !== container.Image ||
+    !Array.isArray(repoDigests) ||
+    !repoDigests.some((value) =>
+      [
+        `searxng/searxng@${digest}`,
+        `docker.io/searxng/searxng@${digest}`,
+      ].includes(value),
+    )
+  )
+    fail("The deployed searxng image is not the pinned image digest.");
+  if (
+    !sameArray(container.Config?.Entrypoint, searxngEntrypoint) ||
+    (container.Config?.Cmd != null &&
+      (!Array.isArray(container.Config.Cmd) || container.Config.Cmd.length > 0))
+  )
+    fail("The deployed searxng entrypoint changed.");
+  const environment = environmentFromInspection(container);
+  if (
+    Object.keys(environment).some(
+      (name) => name.startsWith("SEARXNG_") || name.startsWith("VOIDSTATION_"),
+    )
+  )
+    fail(
+      "The deployed searxng has an unapproved runtime environment variable. Its secret must come from the secret file.",
+    );
+  if (
+    hostConfig?.NetworkMode !== `${projectName}_default` ||
+    JSON.stringify(
+      Object.keys(container.NetworkSettings?.Networks ?? {}).sort(),
+    ) !== JSON.stringify([`${projectName}_default`])
+  )
+    fail("The deployed searxng network changed.");
+  const expected = new Map([
+    [containerPaths.searxngSettings, searxng.settings],
+    [containerPaths.searxngSecret, searxng.secret],
+  ]);
+  const mounts = requireArray(container.Mounts, "SearXNG mounts");
+  if (mounts.length !== expected.size)
+    fail("The deployed searxng mount count changed.");
+  for (const [destination, source] of expected) {
+    const mount = mounts.find(
+      (candidate) => candidate.Destination === destination,
+    );
+    if (
+      !mount ||
+      mount.Type !== "bind" ||
+      mount.Source !== source ||
+      mount.RW !== false
+    )
+      fail(`The deployed searxng mount at ${destination} changed or is unsafe.`);
   }
 }
 async function probeHttps(label, origin, endpoint, ca) {
@@ -1723,7 +1998,13 @@ async function probeBoth(origins, endpoints, probes, wait) {
     await delay(500);
   } while (true);
 }
-async function postDeployInspection(endpoints, probes, origins, worker) {
+async function postDeployInspection(
+  endpoints,
+  probes,
+  origins,
+  worker,
+  searxng,
+) {
   const dashboardId = docker(
     [
       "compose",
@@ -1746,9 +2027,20 @@ async function postDeployInspection(endpoints, probes, origins, worker) {
     ],
     "Finding the deployed assistant-worker",
   ).trim();
-  if (!dashboardId || !workerId)
+  const searxngId = docker(
+    [
+      "compose",
+      "--project-name",
+      projectName,
+      "ps",
+      "--quiet",
+      searxngServiceName,
+    ],
+    "Finding the deployed searxng",
+  ).trim();
+  if (!dashboardId || !workerId || !searxngId)
     fail(
-      "The dashboard and assistant-worker containers must be running after deployment.",
+      "The dashboard, assistant-worker, and searxng containers must be running after deployment.",
     );
   validateDashboardInspection(
     parseJson(
@@ -1765,6 +2057,23 @@ async function postDeployInspection(endpoints, probes, origins, worker) {
       "Assistant-worker inspection",
     )[0],
     worker,
+  );
+  const searxngContainer = parseJson(
+    docker(["inspect", searxngId], "Inspecting the deployed searxng"),
+    "SearXNG inspection",
+  )[0];
+  validateSearxngInspection(
+    searxngContainer,
+    searxng,
+    typeof searxngContainer?.Image === "string"
+      ? parseJson(
+          docker(
+            ["image", "inspect", searxngContainer.Image],
+            "Inspecting the deployed searxng image",
+          ),
+          "SearXNG image inspection",
+        )[0]
+      : undefined,
   );
   await probeBoth(origins, endpoints, probes, true);
 }
@@ -1783,8 +2092,11 @@ async function main() {
     fail(`compose.yaml must use project name ${projectName}.`);
   const dashboard = configuration.services?.[dashboardServiceName];
   const worker = configuration.services?.[workerServiceName];
-  if (!dashboard || !worker)
-    fail("compose.yaml must define dashboard and assistant-worker services.");
+  const searxng = configuration.services?.[searxngServiceName];
+  if (!dashboard || !worker || !searxng)
+    fail(
+      "compose.yaml must define dashboard, assistant-worker, and searxng services.",
+    );
   validateServiceShape(configuration, dashboard, worker);
   const policy = validatePolicy(configuration);
   const endpoints = validatePorts(dashboard, policy.lan);
@@ -1793,13 +2105,16 @@ async function main() {
   validateSecurityConfiguration(workerServiceName, worker);
   const probes = validateMountConfiguration(dashboard, policy.lan);
   const workerProbes = validateWorkerConfiguration(worker, probes.workerToken);
+  const searxngProbes = validateSearxngConfiguration(searxng);
   validateFilesystemProbes(probes, policy.dataUuid);
   validateAuthDirectory(probes.auth);
   validateWorkerState(workerProbes);
+  validateSearxngState(searxngProbes, workerProbes.token);
   validateCertificate(probes.tls, origins.tsHostname, "Tailscale TLS");
   validateCertificate(probes.lanTls, policy.lan.address, "LAN TLS", true);
-  validateSeparateStatePaths(probes, workerProbes);
+  validateSeparateStatePaths(probes, workerProbes, searxngProbes);
   validateRuntimeAccess(probes, workerProbes);
+  validateSearxngRuntimeAccess(searxngProbes);
   tailscaleStatus(endpoints.tailscale, origins.tsHostname);
   validateLanInterface(policy.lan);
   validateIngress(endpoints, policy.lan);
@@ -1811,7 +2126,13 @@ async function main() {
   if (mode === "--predeploy")
     await probeBoth(origins, endpoints, probes, false);
   if (mode === "--postdeploy")
-    await postDeployInspection(endpoints, probes, origins, workerProbes);
+    await postDeployInspection(
+      endpoints,
+      probes,
+      origins,
+      workerProbes,
+      searxngProbes,
+    );
   console.log(
     mode === "--postdeploy"
       ? "Deployment post-deploy inspection passed."

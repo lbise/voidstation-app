@@ -26,7 +26,9 @@ else
   node scripts/deployment-preflight.mjs --predeploy
 fi
 
-printf 'Preflight passed. Building the dashboard and assistant-worker images.\n'
+printf 'Preflight passed. Pulling the pinned searxng image.\n'
+docker compose --project-name voidstation-app pull searxng
+printf 'Building the dashboard and assistant-worker images.\n'
 docker compose --project-name voidstation-app build dashboard assistant-worker
 worker_image="$(docker compose --project-name voidstation-app config --images assistant-worker)"
 if [[ -z "$worker_image" ]]; then
@@ -43,7 +45,9 @@ if [[ -z "$worker_image_id" ]]; then
 fi
 node scripts/worker-runtime-inspect.mjs "$worker_image_id"
 node scripts/deployment-preflight.mjs
-printf 'Preflight passed. Starting the dashboard and assistant-worker.\n'
+printf 'Preflight passed. Starting searxng, the assistant-worker, and the dashboard.\n'
+# The worker's web search backend. Its image is digest-pinned and already pulled.
+docker compose --project-name voidstation-app up --no-build --pull never -d --no-deps searxng
 docker compose --project-name voidstation-app up --no-build -d --no-deps assistant-worker
 worker_container="$(docker compose --project-name voidstation-app ps --quiet assistant-worker)"
 if [[ -z "$worker_container" || "$worker_container" == *$'\n'* ]]; then
@@ -62,4 +66,4 @@ fi
 # Recreate the Dashboard to load it, but do not force an unchanged worker restart.
 docker compose --project-name voidstation-app up --no-build -d --no-deps --force-recreate dashboard
 node scripts/deployment-preflight.mjs --postdeploy
-printf 'Dashboard and assistant-worker passed post-deploy inspection.\n'
+printf 'Dashboard, assistant-worker, and searxng passed post-deploy inspection.\n'

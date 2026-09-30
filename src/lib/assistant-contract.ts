@@ -1,5 +1,6 @@
 import type { MediaResult, SavedMediaResult } from "./media-contract";
 export type { MediaResult, SavedMediaResult } from "./media-contract";
+export type { WebResult, WebSearchHit } from "./web-contract";
 
 export type TurnStatus = "running" | "complete" | "interrupted" | "failure";
 

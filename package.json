@@ -16,7 +16,7 @@
     "docker:up": "./scripts/docker-up.sh",
     "docker:check": "node scripts/deployment-preflight.mjs",
     "docker:down": "docker compose down",
-    "docker:logs": "docker compose logs -f dashboard assistant-worker",
+    "docker:logs": "docker compose logs -f dashboard assistant-worker searxng",
     "worker:runtime:inspect": "node scripts/worker-runtime-inspect.mjs voidstation-assistant-worker:check voidstation-assistant-worker:test",
     "typecheck": "next typegen && tsc --noEmit",
     "pretest": "npm run build --prefix worker && npm run build",

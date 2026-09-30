@@ -34,6 +34,7 @@ Copy `.env.example` to the ignored `.env`. Do not overwrite existing auth, worke
 - `VOIDSTATION_LAN_INTERFACE`: the approved physical LAN interface, not a bridge, tunnel, loopback, or wildcard.
 - `VOIDSTATION_LAN_SOURCE`: the approved canonical RFC1918 CIDR containing that address. Do not allow all RFC1918 ranges or `0.0.0.0/0`.
 - `VOIDSTATION_LAN_TLS_DIRECTORY`: dedicated LAN certificate directory, default `/var/lib/voidstation/lan-tls`.
+- `VOIDSTATION_SEARXNG_SECRET_FILE`: private SearXNG server secret file, default `/var/lib/voidstation/searxng-secret`. See [Web search](#web-search-searxng). Existing deployments must add it before updating; every Compose command fails until it is set.
 
 Preflight checks the actual assigned interface/address and both Docker bindings. A loopback-only native listener on port 3000 does not overlap a LAN-only publication, but a wildcard listener does. Never stop an unrelated service to free a port without its owner's approval.
 
@@ -75,6 +76,42 @@ npm ci --prefix worker
 ```
 
 The worker image copies its fixed Python adapters into a read-only image layer. Runtime changes require an image rebuild. Do not mount the development Pi, dotfiles checkout, or a writable media-adapter directory into the worker.
+
+### Web search (SearXNG)
+
+The Assistant's web search tool queries a self-hosted [SearXNG](https://docs.searxng.org/) metasearch instance, the `searxng` Compose service. SearXNG forwards each query to public engines (DuckDuckGo, Brave, Google, Bing, Mojeek, and Wikipedia for general results, YouTube for videos, and DuckDuckGo, Bing, and Brave news) and returns merged JSON. The worker calls `GET http://searxng:8080/search?q=...&format=json` with its own category, time range, language, and safe-search parameters. It fetches result pages itself over its normal outbound access and refuses private and internal addresses.
+
+The service has no host port. Only containers on the Voidstation Compose bridge can reach it, and the `VOIDSTATION` ingress chain drops direct access from outside the Server just as it does for the worker. The Dashboard shares the bridge but does not call it. SearXNG needs outbound HTTPS to the search engines.
+
+Settings live in the committed `deploy/searxng/settings.yml`, mounted read-only at `/etc/searxng`. It starts from SearXNG's defaults (`use_default_settings`), keeps only the engines listed above, enables the `json` output format, and disables the limiter, bot detection storage (Valkey), image proxy, metrics, autocomplete, and public-instance features. Default safe search is 0 (off); the worker sends `safesearch` per request. The directory must contain only `settings.yml`, readable by others and not world-writable, because the container user reads it through its "other" bits. Engine changes are ordinary reviewed commits followed by `./deploy.sh`. Expect individual engines to rate-limit or CAPTCHA a home IP occasionally; SearXNG reports them in `unresponsive_engines` and returns the other engines' results.
+
+The image is pinned in `compose.yaml` by tag and multi-arch digest (`docker.io/searxng/searxng:2026.9.30-a9d990033@sha256:a07a5cd2…`). Preflight requires the identical reference in `scripts/deployment-preflight.mjs`. To upgrade, choose a new tag from [Docker Hub](https://hub.docker.com/r/searxng/searxng/tags), take its index digest, update both files together, then deploy.
+
+The container runs as the image's own `searxng` user, UID/GID 977, not host UID 1000, so it cannot read Voidstation state. It has a read-only root filesystem, no capabilities, no-new-privileges, a 64 MiB `/tmp` tmpfs for its SQLite engine caches, and a 16 MiB tmpfs at `/var/cache/searxng`. The tmpfs and the settings mount cover both image `VOLUME`s, so Docker creates no anonymous volumes. Startup logs a harmless ownership warning for `/etc/searxng`, a missing `limiter.toml` warning, and one `X-Forwarded-For nor X-Real-IP` error; all three are expected with the limiter disabled.
+
+SearXNG refuses to run with its default server secret. The secret is a private file, like the worker token, and never goes in `.env`, Compose output, or `docker inspect`. The service's fixed entrypoint reads the mounted file into `SEARXNG_SECRET` and then runs the image's own entrypoint. Create it once and set `VOIDSTATION_SEARXNG_SECRET_FILE` in `.env` to its path:
+
+```sh
+# Regenerating it later is harmless; SearXNG keeps no durable state.
+sudo sh -c 'umask 077; head -c 48 /dev/urandom | base64 -w 0 > /var/lib/voidstation/searxng-secret'
+sudo chown 977:977 /var/lib/voidstation/searxng-secret
+sudo chmod 0600 /var/lib/voidstation/searxng-secret
+```
+
+Preflight requires owner UID/GID 977, mode `0600`, at least 32 non-whitespace characters read as UID 977, and a path outside the other state directories. A missing or short secret makes the container exit with status 78 and a clear log line. Do not back it up; create a new one instead.
+
+After deployment, verify search from the worker's side of the network:
+
+```sh
+docker compose --project-name voidstation-app ps searxng
+docker compose --project-name voidstation-app logs --tail 50 searxng
+docker compose --project-name voidstation-app exec assistant-worker node -e \
+  "fetch('http://searxng:8080/search?q=ubuntu&format=json&categories=general').then(async (r) => { const d = await r.json(); console.log(r.status, d.results.length, JSON.stringify(d.unresponsive_engines)); })"
+```
+
+Expect status 200 and a non-zero result count. A 403 means the `json` format is not enabled. No host command such as `curl http://127.0.0.1:8080` should reach it.
+
+SearXNG is one search provider behind the worker, not a fixed dependency. To use another backend later, add a provider to the worker's search code, select it with `VOIDSTATION_SEARCH_PROVIDER` on `assistant-worker`, and update `compose.yaml` and preflight together (including removing this service if it is no longer used).
 
 ### Certificates
 
@@ -173,9 +210,9 @@ npm run docker:logs
 
 Preflight resolves effective Compose configuration and rejects extra services, environment overrides, unsafe publication, invalid origins, mismatched certificates or policy, Funnel, inaccessible state, unexpected mounts, root execution, added capabilities, privilege escalation, or conflicting ports. It checks mounted inputs as UID/GID 1000 with supplementary groups cleared, so root's permissions cannot hide runtime failures.
 
-Production updates check both existing HTTPS paths before changes, build only Dashboard and assistant-worker, inspect the built worker, and recheck configuration. They update the worker without forcing an unchanged image to restart, then recreate the Dashboard so changed certificate files load even when its image is unchanged. Postdeploy inspects both containers and requires certificate-verified login responses on both paths. `ca.pem` supplies trust only for the LAN probe; Tailscale uses normal public trust. Do not use `-k`, `NODE_TLS_REJECT_UNAUTHORIZED=0`, `next start`, or permissive CORS as a workaround. A failed probe must identify the path that failed. A successful Server-local probe does not prove remote reachability.
+Production updates check both existing HTTPS paths before changes, pull the digest-pinned SearXNG image, build only Dashboard and assistant-worker, inspect the built worker, and recheck configuration. They start SearXNG from the pulled image, then update the worker without forcing an unchanged image to restart, then recreate the Dashboard so changed certificate files load even when its image is unchanged. Postdeploy inspects all three containers, including the SearXNG image digest, and requires certificate-verified login responses on both paths. `ca.pem` supplies trust only for the LAN probe; Tailscale uses normal public trust. Do not use `-k`, `NODE_TLS_REJECT_UNAUTHORIZED=0`, `next start`, or permissive CORS as a workaround. A failed probe must identify the path that failed. A successful Server-local probe does not prove remote reachability.
 
-Both containers run as UID/GID 1000 with all capabilities dropped, no-new-privileges, read-only code, and a restricted `/tmp` tmpfs. The Dashboard retains its five narrow read-only metrics mounts, writable auth bind, read-only token, and two read-only TLS mounts. The worker has only the read-only token plus separate writable conversation and credential binds. Neither has a Docker socket or development workspace. The worker has no host port, TLS keys, Dashboard auth database, or host-metrics mounts.
+The Dashboard and worker run as UID/GID 1000; SearXNG runs as UID/GID 977. All three drop every capability and use no-new-privileges, a read-only root filesystem, and restricted tmpfs mounts. The Dashboard retains its five narrow read-only metrics mounts, writable auth bind, read-only token, and two read-only TLS mounts. The worker has only the read-only token plus separate writable conversation and credential binds. Neither has a Docker socket or development workspace. The worker has no host port, TLS keys, Dashboard auth database, or host-metrics mounts. SearXNG has only its read-only settings directory and secret file, and no host port.
 
 ### Rollback
 
@@ -191,11 +228,11 @@ python3 - <<'PY'
 import json, os, pathlib, subprocess
 compose = ['docker', 'compose', '--project-name', 'voidstation-app']
 config = json.loads(subprocess.check_output(compose + ['config', '--format', 'json']))
-if not set(config['services']).issubset({'dashboard', 'assistant-worker'}):
+if not set(config['services']).issubset({'dashboard', 'assistant-worker', 'searxng'}):
     raise SystemExit('Unexpected services: stop and inspect.')
 for service in list(config['services']):
     ids = subprocess.check_output(compose + ['ps', '--quiet', service], text=True).split()
-    if not ids and service == 'assistant-worker':
+    if not ids and service in ('assistant-worker', 'searxng'):
         del config['services'][service]
         continue
     if len(ids) != 1:
@@ -217,14 +254,14 @@ After explicit rollback authorization, stop only Voidstation's active work, then
 
 ```sh
 # Stop the current project services that are running. No other workloads.
-docker compose --project-name voidstation-app stop dashboard assistant-worker
+docker compose --project-name voidstation-app stop dashboard assistant-worker searxng
 docker compose --project-name voidstation-app \
   --file "$ROLLBACK_DIR/compose.json" up --no-build --pull never --force-recreate -d --no-deps
 ```
 
 For a prior dual-access deployment, verify both certificate-verified login paths and inspect the resulting containers. The current `node scripts/deployment-preflight.mjs --postdeploy` can verify it when current `.env` describes exactly the restored configuration. Do not treat a preflight failure as permission to weaken security.
 
-For the first migration, the saved secure configuration may support only Tailscale. Restoring it is an acceptable temporary loss of LAN access, not permission to restore HTTP or remove login. Retain the new restricted ingress policy: the old Tailscale publication still matches its allowed path, and the absence of a LAN listener leaves LAN access closed. The saved configuration must have no LAN publication when its image lacks the LAN listener. A worker absent from the saved configuration stays stopped. Ensure Tailscale renewal still matches the retained certificate. Verify Tailscale TLS/login, actual mounts/publication/hardening, and plaintext/backend refusal; record LAN as unavailable. Neither the old single-rule preflight nor the new dual-listener preflight can certify this transitional combination automatically. Use the saved inspection evidence and owner-reviewed runtime checks, then plan a fresh authorized cutover. Never flush or weaken the firewall to make an old check pass.
+For the first migration, the saved secure configuration may support only Tailscale. Restoring it is an acceptable temporary loss of LAN access, not permission to restore HTTP or remove login. Retain the new restricted ingress policy: the old Tailscale publication still matches its allowed path, and the absence of a LAN listener leaves LAN access closed. The saved configuration must have no LAN publication when its image lacks the LAN listener. A worker or SearXNG service absent from the saved configuration stays stopped. Ensure Tailscale renewal still matches the retained certificate. Verify Tailscale TLS/login, actual mounts/publication/hardening, and plaintext/backend refusal; record LAN as unavailable. Neither the old single-rule preflight nor the new dual-listener preflight can certify this transitional combination automatically. Use the saved inspection evidence and owner-reviewed runtime checks, then plan a fresh authorized cutover. Never flush or weaken the firewall to make an old check pass.
 
 ## Owner login and recovery
 
@@ -260,7 +297,7 @@ sudo tar -C /var/lib/voidstation -cf - auth conversations worker-credentials med
 docker compose --project-name voidstation-app start assistant-worker dashboard
 ```
 
-Substitute configured host paths when they differ. Keep TLS server keys in a separate encrypted backup; keep the CA signing key's encrypted offline backup off the Server. Back up private deployment and root ingress configuration separately. Never archive private state unencrypted.
+Substitute configured host paths when they differ. SearXNG has no durable state; its secret is regenerable and is not part of this snapshot. Keep TLS server keys in a separate encrypted backup; keep the CA signing key's encrypted offline backup off the Server. Back up private deployment and root ingress configuration separately. Never archive private state unencrypted.
 
 To restore, preserve current state as another encrypted snapshot first. Decrypt a trusted archive into an empty owner-only staging directory while both containers are stopped:
 

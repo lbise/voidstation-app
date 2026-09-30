@@ -79,6 +79,11 @@ function resultSummary(result: SavedMediaResult["result"]): string {
   }
 }
 
+function webHost(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  try { return new URL(value).hostname.replace(/^www\./, ""); } catch { return undefined; }
+}
+
 export function activitySummary(entries: readonly ActivityEntry[]): string {
   const labels = entries.map((entry) => {
     if (entry.type === "mediaResult") return resultSummary(entry.value.result);
@@ -89,6 +94,8 @@ export function activitySummary(entries: readonly ActivityEntry[]): string {
       case "media_details": return `Read ${entry.value.parameters.type === "movie" ? "movie" : entry.value.parameters.type === "series" ? "series" : "media"} details`;
       case "media_status": return "Checked media status";
       case "media_discovery": return "Read media defaults";
+      case "web_search": return "Searched the web";
+      case "web_fetch": return `Read ${webHost(entry.value.parameters.url) ?? "a web page"}`;
       default: return `Ran ${entry.value.name}`;
     }
   });

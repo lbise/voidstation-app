@@ -104,13 +104,13 @@ For certificate setup, run `bash scripts/setup-lan-certificates.sh LAN_IP` **on 
 
 ```sh
 npm run docker:check    # Validate both TLS paths, ingress policy, mounts, and ports
-./deploy.sh             # Check, build, and update Dashboard plus assistant-worker
+./deploy.sh             # Check, build, and update Dashboard, assistant-worker, and searxng
 npm run docker:logs
 ```
 
 The Tailscale publication targets Dashboard container port 3000; the LAN publication targets container port 3443. Both are TLS-only listeners in one process, with separate certificates and listener-specific Host checks. `assistant-worker` has no host publication. The Dashboard calls it only on the Compose bridge at `http://assistant-worker:3001`, authenticated with a shared token file. Conversation transcripts and provider refresh state remain in separate durable worker directories. A persistent DOCKER-USER policy permits only the configured ingress interfaces, source ranges, and original published destinations to `br-voidstation`. It blocks unconfigured ingress and direct backend/worker access. The owner must authorize and persist that policy before cutover. Existing Dashboard bindings are permitted during updates; unrelated port owners are not displaced. See the runbook for pre/post checks and rollback that retains login and HTTPS.
 
-Both images run as UID/GID 1000. Compose drops capabilities, prevents gaining new privileges, uses a read-only root filesystem, and gives each service only its own writable state plus a restricted `/tmp` tmpfs. The Dashboard binds only the required narrow read-only inputs:
+The Dashboard and worker run as UID/GID 1000. Compose drops capabilities, prevents gaining new privileges, uses a read-only root filesystem, and gives each service only its own writable state plus a restricted `/tmp` tmpfs. The Dashboard binds only the required narrow read-only inputs:
 
 | Host source | Container target |
 | --- | --- |
@@ -122,7 +122,7 @@ Both images run as UID/GID 1000. Compose drops capabilities, prevents gaining ne
 
 Set the two filesystem variables to dedicated existing empty directories on the selected root and data filesystems. There are no default probe paths. Configure the expected data filesystem UUID too; preflight verifies it and checks that the root probe belongs to `/`. The image uses `VOIDSTATION_HOST_PROC=/host/proc` plus fixed filesystem targets and never falls back to container sources if those mounts fail. Missing source files or directories make Compose fail rather than create them. Unreadable or invalid sources report unavailable. Do not work around access failures with root, privileged mode, the Docker socket, or an entire host filesystem mount.
 
-The worker has outbound network access for its configured provider. It has no Docker socket, host metrics mounts, TLS mount, application auth mount, development workspace, or host Pi configuration. Its token is read-only. Conversation storage and worker credential storage are separate writable UID-1000 directories. Use the worker's [independent device-code login](worker/README.md#codex-login). Never copy an interactive Pi or Codex credential into either directory.
+The worker has outbound network access for its configured provider and for fetching web pages. Web search goes through the internal `searxng` service at `http://searxng:8080` (`VOIDSTATION_SEARCH_PROVIDER=searxng`). SearXNG uses a digest-pinned upstream image and runs as the image's own UID/GID 977 with a read-only root, no capabilities, no host port, the committed read-only `deploy/searxng/settings.yml`, and a private secret file named by `VOIDSTATION_SEARXNG_SECRET_FILE`. See [the runbook](docs/deployment.md#web-search-searxng). The worker has no Docker socket, host metrics mounts, TLS mount, application auth mount, development workspace, or host Pi configuration. Its token is read-only. Conversation storage and worker credential storage are separate writable UID-1000 directories. Use the worker's [independent device-code login](worker/README.md#codex-login). Never copy an interactive Pi or Codex credential into either directory.
 
 Back up `auth`, `conversations`, `worker-credentials`, and `worker-token` as one encrypted, owner-only snapshot while both containers are stopped. Restore them only while both containers remain stopped, restore UID/GID 1000 and the documented modes, then run preflight before starting either container. A restored unfinished turn stays interrupted. Do not replay it. A future action approval restored from backup must be rechecked against current service state before execution; expired approvals stay expired. Deleting an idle conversation removes its transcript and its future action and approval records. It never reverses media changes.
 
