@@ -58,6 +58,7 @@ import {
   MessageScrollerItem,
   MessageScrollerProvider,
   MessageScrollerViewport,
+  useMessageScroller,
 } from "@/components/ui/message-scroller";
 import { Textarea } from "@/components/ui/textarea";
 import type {
@@ -383,6 +384,22 @@ function ConversationEntry({ entry, verifiedVideos }: { entry: ThreadGroup; veri
   );
 }
 
+/**
+ * Sending always returns to the latest message and resumes following the reply.
+ * The scroller stops following after any wheel, touch or scroll key in the thread,
+ * even when that input moves nothing, so it cannot be relied on to stay at the end.
+ */
+function FollowOnSend({ sendCount }: { sendCount: number }) {
+  const { scrollToEnd } = useMessageScroller();
+  const handled = useRef(sendCount);
+  useEffect(() => {
+    if (handled.current === sendCount) return;
+    handled.current = sendCount;
+    scrollToEnd({ behavior: "smooth" });
+  }, [scrollToEnd, sendCount]);
+  return null;
+}
+
 function replaceConversation(conversations: Conversation[], next: Conversation): Conversation[] {
   const existing = conversations.findIndex((conversation) => conversation.id === next.id);
   if (existing === -1) return [next, ...conversations];
@@ -403,6 +420,7 @@ export function Assistant() {
   const [conversationPendingDeletion, setConversationPendingDeletion] = useState<Conversation | null>(null);
   const [text, setText] = useState("");
   const [optimisticMessage, setOptimisticMessage] = useState<OptimisticMessage | null>(null);
+  const [sendCount, setSendCount] = useState(0);
   const [settings, setSettings] = useState<AssistantSettings | null>(null);
   const [settingsState, setSettingsState] = useState<"loading" | "ready" | "unavailable">("loading");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -649,6 +667,7 @@ export function Assistant() {
     setActionError(null);
     setSendingIds((previous) => new Set(previous).add(conversationId));
     setOptimisticMessage({ id: `pending-${crypto.randomUUID()}`, role: "user", text: message, pending: true });
+    setSendCount((count) => count + 1);
     setText("");
     const result = await requestJson(
       `/api/assistant/conversations/${encodeURIComponent(conversationId)}/turns`,
@@ -975,6 +994,7 @@ export function Assistant() {
           )}
           {activeConversation && entries.length > 0 && (
             <MessageScrollerProvider autoScroll defaultScrollPosition="end">
+              <FollowOnSend sendCount={sendCount} />
               <MessageScroller className="assistant-message-scroller">
                 <MessageScrollerViewport aria-label="Conversation messages">
                   <MessageScrollerContent className="assistant-messages" role="log" aria-live="polite" aria-relevant="additions text">

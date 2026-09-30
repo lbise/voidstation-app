@@ -79,6 +79,20 @@ try {
     await server.fixture([streaming
       ? { chunks: reply.split("\n\n").map((text) => ({ text: `${text}\n\n`, delayMs: 30 })) }
       : { text: reply }]);
+    // Reading back up (or any stray wheel input) must not stop the next reply from following.
+    await browser("eval", `(() => {
+      const viewport = document.querySelector('[data-slot="message-scroller-viewport"]');
+      viewport.dispatchEvent(new WheelEvent('wheel', { deltaY: -400, bubbles: true }));
+      viewport.scrollTop = 0;
+    })()`);
+    if (width > 859) {
+      const { result: composer } = await browser("eval", `(() => {
+        const hint = document.querySelector('.assistant-composer-hint').getBoundingClientRect();
+        const send = document.querySelector('.assistant-send').getBoundingClientRect();
+        return { gap: send.left - hint.right };
+      })()`);
+      assert.ok(composer.gap >= 0 && composer.gap <= 16, `The composer hint is not beside Send: ${JSON.stringify(composer)}`);
+    }
     await browser("fill", "#assistant-message", "Another long reply please");
     await browser("press", "Enter");
     await browser("wait", "--fn", `document.querySelectorAll('.assistant-markdown').length === 2 &&
