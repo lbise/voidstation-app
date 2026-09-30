@@ -41,6 +41,7 @@ services:
       VOIDSTATION_HOST_PROC: "/host/proc"
       VOIDSTATION_HOST_ROOT_FS: "/host/filesystems/root"
       VOIDSTATION_HOST_DATA_FS: "/host/filesystems/data"
+      VOIDSTATION_HOST_STATUS: "/host/status/status.json"
       VOIDSTATION_WORKER_URL: "http://assistant-worker:3001"
       VOIDSTATION_WORKER_TOKEN_FILE: "/run/voidstation-worker/token"
     read_only: true
@@ -51,8 +52,8 @@ services:
     tmpfs:
       - /tmp:size=16m,noexec,nosuid
     volumes:
-      # Keep these five narrow metrics inputs read-only. Do not replace them
-      # with / or a broad host mount.
+      # Keep these narrow metrics inputs read-only. Do not replace them with /,
+      # /proc, /sys, /run, the Docker socket, or another broad host mount.
       - type: bind
         source: /proc/stat
         target: /host/proc/stat
@@ -68,6 +69,28 @@ services:
       - type: bind
         source: /proc/meminfo
         target: /host/proc/meminfo
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /proc/loadavg
+        target: /host/proc/loadavg
+        read_only: true
+        bind:
+          create_host_path: false
+      # Kernel pressure stall information: only cpu, memory, and io are read.
+      - type: bind
+        source: /proc/pressure
+        target: /host/proc/pressure
+        read_only: true
+        bind:
+          create_host_path: false
+      # Written by the root voidstation-host-status timer (reboot, updates,
+      # SMART). Mount the directory, not the file: the helper replaces the file
+      # atomically. Install it first with scripts/install-host-status.sh.
+      - type: bind
+        source: "${VOIDSTATION_HOST_STATUS_DIRECTORY:-/var/lib/voidstation/host-status}"
+        target: /host/status
         read_only: true
         bind:
           create_host_path: false

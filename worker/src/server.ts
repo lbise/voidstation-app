@@ -10,6 +10,7 @@ import type { AssistantModelOption, AssistantProviderId, AssistantProviderOption
 import { RestrictedResourceLoader, codexModel, codexModels, createCodexRuntime, emptySettings, installSanitizedProvider, providerFailure, type ProviderFailureKind } from "./pi.ts";
 import { ConversationStore } from "./store.ts";
 import { createMediaTools } from "./media.ts";
+import { downloadQueue } from "./downloads.ts";
 import { createWebTools } from "./web.ts";
 import type { MediaResult } from "./media-contract.ts";
 
@@ -499,6 +500,8 @@ async function route(request: IncomingMessage, response: ServerResponse, worker:
   const url = new URL(request.url ?? "/", "http://worker.internal");
   const parts = url.pathname.split("/").filter(Boolean);
   if (request.method === "GET" && url.pathname === "/health") return send(response, 200, { ok: true });
+  // Read-only Dashboard feed; it never touches the model runtime.
+  if (request.method === "GET" && url.pathname === "/media/queue") return send(response, 200, await downloadQueue());
   if (url.pathname === "/settings") {
     if (request.method === "GET") return send(response, 200, await worker.assistantSettings());
     if (request.method === "PUT") {

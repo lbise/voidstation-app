@@ -16,9 +16,10 @@ ENV NODE_ENV=production \
     VOIDSTATION_HOST_PROC=/host/proc \
     VOIDSTATION_HOST_ROOT_FS=/host/filesystems/root \
     VOIDSTATION_HOST_DATA_FS=/host/filesystems/data \
+    VOIDSTATION_HOST_STATUS=/host/status/status.json \
     VOIDSTATION_AUTH_DB=/var/lib/voidstation/auth.sqlite
-RUN mkdir -p /host/proc /host/filesystems/root /host/filesystems/data /var/lib/voidstation /run/voidstation-tls /run/voidstation-lan-tls \
-    && touch /host/proc/stat /host/proc/uptime /host/proc/meminfo
+RUN mkdir -p /host/proc/pressure /host/status /host/filesystems/root /host/filesystems/data /var/lib/voidstation /run/voidstation-tls /run/voidstation-lan-tls \
+    && touch /host/proc/stat /host/proc/uptime /host/proc/meminfo /host/proc/loadavg
 # A Next custom server is not traced as a standalone entry point. Keep the
 # production dependencies and complete build instead of relying on server.js.
 COPY --from=build --chown=1000:1000 /app/package.json ./

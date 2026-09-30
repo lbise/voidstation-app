@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { spawn, execFileSync } from "node:child_process";
 import { createServer } from "node:https";
@@ -100,6 +100,7 @@ function lockedDashboard(paths: Paths): Record<string, any> {
           VOIDSTATION_HOST_PROC: "/host/proc",
           VOIDSTATION_HOST_ROOT_FS: "/host/filesystems/root",
           VOIDSTATION_HOST_DATA_FS: "/host/filesystems/data",
+          VOIDSTATION_HOST_STATUS: "/host/status/status.json",
           VOIDSTATION_WORKER_URL: "http://assistant-worker:3001",
           VOIDSTATION_WORKER_TOKEN_FILE: "/run/voidstation-worker/token",
         },
@@ -111,6 +112,9 @@ function lockedDashboard(paths: Paths): Record<string, any> {
           bind("/proc/stat", "/host/proc/stat"),
           bind("/proc/uptime", "/host/proc/uptime"),
           bind("/proc/meminfo", "/host/proc/meminfo"),
+          bind("/proc/loadavg", "/host/proc/loadavg"),
+          bind("/proc/pressure", "/host/proc/pressure"),
+          bind(paths.hostStatus, "/host/status"),
           bind(paths.root, "/host/filesystems/root"),
           bind(paths.data, "/host/filesystems/data"),
           bind(paths.auth, "/var/lib/voidstation", false),
@@ -337,6 +341,7 @@ function deployedDashboard(
         "VOIDSTATION_HOST_PROC=/host/proc",
         "VOIDSTATION_HOST_ROOT_FS=/host/filesystems/root",
         "VOIDSTATION_HOST_DATA_FS=/host/filesystems/data",
+        "VOIDSTATION_HOST_STATUS=/host/status/status.json",
         "VOIDSTATION_WORKER_URL=http://assistant-worker:3001",
         "VOIDSTATION_WORKER_TOKEN_FILE=/run/voidstation-worker/token",
       ],
@@ -382,6 +387,24 @@ function deployedDashboard(
         Type: "bind",
         Source: "/proc/meminfo",
         Destination: "/host/proc/meminfo",
+        RW: false,
+      },
+      {
+        Type: "bind",
+        Source: "/proc/loadavg",
+        Destination: "/host/proc/loadavg",
+        RW: false,
+      },
+      {
+        Type: "bind",
+        Source: "/proc/pressure",
+        Destination: "/host/proc/pressure",
+        RW: false,
+      },
+      {
+        Type: "bind",
+        Source: paths.hostStatus,
+        Destination: "/host/status",
         RW: false,
       },
       {
@@ -441,6 +464,7 @@ async function runPreflight(
   const credentials = join(workspace, "credentials");
   const media = join(workspace, "media");
   const searxngSecret = join(workspace, "searxng-secret");
+  const hostStatus = join(workspace, "host-status");
   const data = await mkdtemp(join("/dev/shm", "voidstation-preflight-data-"));
   workspaces.push(data);
   const paths = {
@@ -454,9 +478,11 @@ async function runPreflight(
     credentials,
     media,
     searxngSecret,
+    hostStatus,
   };
   await Promise.all([
     mkdir(bin),
+    mkdir(hostStatus, { mode: 0o755 }),
     mkdir(root),
     mkdir(auth, { mode: 0o700 }),
     mkdir(tls, { mode: 0o700 }),
@@ -472,6 +498,7 @@ async function runPreflight(
     chmod(conversations, 0o700),
     chmod(credentials, 0o700),
     chmod(media, 0o700),
+    chmod(hostStatus, 0o755),
     writeFile(token, "a-worker-token-with-at-least-thirty-two-characters", {
       mode: 0o600,
     }),
@@ -487,6 +514,8 @@ async function runPreflight(
     radarr: { endpoint: "http://127.0.0.1:7878", keyFile: "/run/voidstation-media/radarr.key", rootFolder: "/media/movies", defaultQualityProfileId: 4, qualityMappings: { "4K": 7 } },
     sonarr: { endpoint: "http://127.0.0.1:8989", keyFile: "/run/voidstation-media/sonarr.key", rootFolder: "/media/series", defaultQualityProfileId: 5, qualityMappings: { "4K": 9 } },
   }), { mode: 0o600 });
+  await writeFile(join(hostStatus, "status.json"), "{}\n", { mode: 0o644 });
+  await chmod(join(hostStatus, "status.json"), 0o644);
   await writeFile(join(tls, "cert.pem"), "fixture certificate\n");
   await writeFile(join(tls, "key.pem"), "fixture key\n", { mode: 0o600 });
   await writeFile(join(lanTls, "cert.pem"), "fixture certificate\n");
@@ -692,6 +721,7 @@ const lstat = fs.lstatSync;
 fs.lstatSync = function(file, ...args) {
   const stat = lstat.call(this, file, ...args);
   if (String(file).startsWith(${JSON.stringify(workspace + "/")}) && String(file).endsWith("/searxng-secret")) Object.assign(stat, { uid: Number(process.env.PREFLIGHT_SEARXNG_SECRET_UID ?? 977), gid: 977 });
+  else if (String(file).startsWith(${JSON.stringify(workspace + "/")}) && (String(file).endsWith("/host-status") || String(file).endsWith("/host-status/status.json"))) Object.assign(stat, { uid: Number(process.env.PREFLIGHT_HOST_STATUS_UID ?? 0), gid: 0 });
   else if (String(file).startsWith(${JSON.stringify(workspace + "/")})) Object.assign(stat, { uid: 1000, gid: 1000 });
   return stat;
 };`,
@@ -1535,5 +1565,126 @@ it("rejects a deployed SearXNG with an added capability or writable settings", a
   });
   expect(writable.output).toContain(
     "searxng mount at /etc/searxng changed or is unsafe",
+  );
+});
+
+it("rejects a missing host-status directory with the install command", async () => {
+  const result = await runPreflight(lockedDashboard, {
+    setup: async (paths) => {
+      await rm(paths.hostStatus, { recursive: true, force: true });
+    },
+  });
+  expect(result.output).toMatch(/^1\n/);
+  expect(result.output).toContain("Host status directory");
+  expect(result.output).toContain("sudo scripts/install-host-status.sh");
+});
+
+it("rejects a host-status directory the dashboard user could write", async () => {
+  const groupWritable = await runPreflight(lockedDashboard, {
+    setup: async (paths) => {
+      await chmod(paths.hostStatus, 0o775);
+    },
+  });
+  expect(groupWritable.output).toContain("must be owned by root with mode 0755");
+  const userOwned = await runPreflight(lockedDashboard, {
+    setup: async () => ({ PREFLIGHT_HOST_STATUS_UID: "1000" }),
+  });
+  expect(userOwned.output).toContain("must be owned by root with mode 0755");
+});
+
+it("rejects a world-writable host-status file", async () => {
+  const result = await runPreflight(lockedDashboard, {
+    setup: async (paths) => {
+      await chmod(join(paths.hostStatus, "status.json"), 0o666);
+    },
+  });
+  expect(result.output).toContain("Host status file");
+});
+
+it("rejects a dangling host-status file link", async () => {
+  const result = await runPreflight(lockedDashboard, {
+    setup: async (paths) => {
+      await rm(join(paths.hostStatus, "status.json"));
+      await symlink("/nonexistent/status.json", join(paths.hostStatus, "status.json"));
+    },
+  });
+  expect(result.output).toContain("Host status file must not be a symbolic link");
+});
+
+it("accepts a host-status directory before the helper's first run", async () => {
+  const result = await runPreflight(lockedDashboard, {
+    setup: async (paths) => {
+      await rm(join(paths.hostStatus, "status.json"));
+    },
+  });
+  expect(result.output).toContain("Deployment preflight passed.");
+});
+
+it("rejects broadened or writable metrics mounts", async () => {
+  for (const [change, message] of [
+    [
+      (volumes: Record<string, any>[]) =>
+        (volumes.find((volume) => volume.target === "/host/proc/pressure")!.source = "/proc"),
+      "/host/proc/pressure has changed or is unsafe",
+    ],
+    [
+      (volumes: Record<string, any>[]) =>
+        (volumes.find((volume) => volume.target === "/host/proc/loadavg")!.read_only = false),
+      "/host/proc/loadavg has changed or is unsafe",
+    ],
+    [
+      (volumes: Record<string, any>[]) =>
+        (volumes.find((volume) => volume.target === "/host/status")!.read_only = false),
+      "/host/status must be read-only",
+    ],
+    [
+      (volumes: Record<string, any>[]) =>
+        volumes.splice(volumes.findIndex((volume) => volume.target === "/host/proc/loadavg"), 1),
+      "dashboard must have eight metrics mounts",
+    ],
+  ] as const) {
+    const result = await runPreflight((paths) => {
+      const configuration = lockedDashboard(paths);
+      change(configuration.services.dashboard.volumes);
+      return configuration;
+    });
+    expect(result.output).toContain(message);
+  }
+});
+
+it("rejects host status inside another state directory", async () => {
+  const result = await runPreflight(
+    (paths) => {
+      const configuration = lockedDashboard(paths);
+      configuration.services.dashboard.volumes.find(
+        (volume: Record<string, any>) => volume.target === "/host/status",
+      ).source = join(paths.auth, "host-status");
+      return configuration;
+    },
+    {
+      setup: async (paths) => {
+        await mkdir(join(paths.auth, "host-status"), { mode: 0o755 });
+        await chmod(join(paths.auth, "host-status"), 0o755);
+      },
+    },
+  );
+  expect(result.output).toContain(
+    "auth data and host status must use separate paths",
+  );
+});
+
+it("rejects a deployed dashboard without the host-status mount", async () => {
+  const result = await runPreflight(lockedDashboard, {
+    postDeploy: true,
+    inspection: (paths, endpoint) => {
+      const inspection = deployedDashboard(paths, endpoint);
+      inspection.Mounts.find(
+        (mount: Record<string, any>) => mount.Destination === "/host/status",
+      ).RW = true;
+      return inspection;
+    },
+  });
+  expect(result.output).toContain(
+    "dashboard mount at /host/status changed or is unsafe",
   );
 });

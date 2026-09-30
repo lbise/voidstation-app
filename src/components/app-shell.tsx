@@ -6,7 +6,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 
 import { LogoutButton } from "@/components/logout-button";
 import { Wordmark } from "@/components/wordmark";
-import { ServerMetricsProvider, useServerMetrics, formatCpu, formatPercentage, readingStatus } from "@/components/server-metrics";
+import { ServerMetricsProvider, useServerMetrics, formatCpu, formatPercentage, liveReadings, readingStatus } from "@/components/server-metrics";
 import type { CpuHistory } from "@/components/cpu-history";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -49,7 +49,7 @@ function shortUptime(seconds: number) {
 
 function ServerGlance() {
   const { metrics, initialLoading, requestFailure, cpuHistory, lastUpdated } = useServerMetrics();
-  const readings = Object.values(metrics);
+  const readings = liveReadings(metrics);
   const anyStale = readings.some((reading) => reading.stale);
   const allAvailable = readings.every((reading) => Boolean(reading.measurement) && !reading.stale);
   const state = initialLoading ? "loading" : anyStale ? "stale" : requestFailure ? "unavailable" : allAvailable ? "available" : "partial";

@@ -12,7 +12,23 @@ _Avoid_: Backend
 The view of the server's resource usage and status within Voidstation.
 
 **Disk space**:
-The capacity, used space, and available space of a mounted filesystem on the server. It does not describe a physical disk's health or raw capacity.
+The capacity, used space, and available space of a mounted filesystem on the server. It does not describe a physical disk's health or raw capacity; see Drive health.
+
+**Drive health**:
+A physical drive's SMART self-assessment and wear indicators (reallocated or pending sectors, media errors, endurance used). A drive in standby is not woken to check it.
+_Avoid_: Disk health, when it could be confused with Disk space
+
+**Load average**:
+The average number of tasks running or waiting to run on the server over 1, 5, and 15 minutes, read against its logical CPU count. Load above the core count means work is queuing.
+
+**Pressure**:
+The share of recent time in which at least one task on the server was stalled waiting for CPU, memory, or disk I/O.
+
+**Host status**:
+The server's reboot-required state, pending package updates, and Drive health, reported by a periodic check that runs on the server itself. It is not a live reading and always carries the time of its check.
+
+**Download queue**:
+The items Radarr and Sonarr are downloading or processing, as those services report them. A title in the queue is not yet available in the managed library.
 
 **Uptime**:
 The time elapsed since the server booted, not since Voidstation or its container started.

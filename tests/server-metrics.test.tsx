@@ -7,6 +7,7 @@ import {
   type ServerMetricsContextValue,
 } from "../src/components/server-metrics";
 import type { HostMetrics } from "../src/lib/metrics-contract";
+import { extendedObservations, unavailableExtended } from "./helpers/metrics-fixture";
 
 const START = Date.parse("2026-01-02T03:04:05.000Z");
 const unavailable = { status: "unavailable", value: null, observedAt: null } as const;
@@ -17,6 +18,7 @@ function observations(observedAt = new Date(Date.now() - 1000).toISOString()): H
     ram: { status: "available", value: { used: 0, available: 100, total: 100 }, unit: "bytes", observedAt },
     rootFilesystem: { status: "available", value: { used: 0, available: 90, total: 100 }, unit: "bytes", observedAt },
     dataFilesystem: { status: "available", value: { used: 0, available: 100, total: 100 }, unit: "bytes", observedAt },
+    ...extendedObservations(observedAt),
   };
 }
 

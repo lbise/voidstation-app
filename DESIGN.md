@@ -167,7 +167,7 @@ components:
     textColor: "{colors.ink}"
     typography: "{typography.body}"
     rounded: "{rounded.lg}"
-    padding: "20px 0 0"
+    padding: "20px 0"
   tool-disclosure:
     backgroundColor: "{colors.paper}"
     textColor: "{colors.ink-muted}"
@@ -219,7 +219,7 @@ The header logo uses `logo-word` and `logo-mark`. Its historical tight spacing i
 
 `body` is the 14px UI baseline. `title` is the 22px Dashboard heading; `conversation-title` keeps the desktop conversation heading small. `reading` is Assistant prose at 15px with 1.7 line height and a 72ch limit. User bubbles use 15px with 1.55 line height. Markdown headings step through 22, 19, 17, and 15px, with 600 weight.
 
-`navigation`, `label`, and `caption` keep chrome compact. Use sentence case for labels and headings; do not add uppercase eyebrows. Geist Mono belongs to code, chart axes, capacity totals, and scalar figures, with tabular numerals. `cpu-current` is the largest figure; `capacity` and `instrument` support storage and secondary readings. Header readouts use compact Geist with tabular numerals, and Uptime uses 18px Geist. Do not force every number into Mono.
+`navigation`, `label`, and `caption` keep chrome compact. Use sentence case for labels and headings; do not add uppercase eyebrows. Geist Mono belongs to code, chart axes, capacity totals, and scalar figures, with tabular numerals. `cpu-current` is the largest figure; `capacity` and `instrument` support storage and secondary readings. Header readouts use compact Geist with tabular numerals. The Dashboard Uptime figure uses 32px semibold Geist (28px on phones) with muted 16px unit words. Do not force every number into Mono.
 
 Desktop composer text is 15px with 1.55 line height. `mobile-input` makes it 16px on phones; settings fields also become 16px. These local roles take precedence over the unused larger display steps in `tokens.css`.
 
@@ -233,7 +233,7 @@ At 859px and below, hide the sidebar and conversation heading. Show CPU/RAM in t
 
 Header readouts reduce before the phone layout: hide Uptime at 1240px, Disk at 1080px, and the wordmark text/OS label at 980px. At 360px and below, hide the extra trailing mobile action. Keep the account control.
 
-Dashboard content caps at 1280px including its padding. Desktop insets are 32px with 48px below; the main grid pairs a flexible CPU card with a 320px RAM/Uptime column, separated by 16px. Disk spans the width with two filesystem columns. At 960px, use 24px insets and a 280px side column. At 760px, stack cards and filesystems, use 16px side insets, 12px gaps, and 16px card interiors. The CPU chart changes from 260px to 220px tall.
+Dashboard content caps at 1280px including its padding. Desktop insets are 32px with 48px below. The page heading carries the title, Live state and the single "Updated" time with its reading-info control; Uptime sits opposite it as the page's headline figure, not in a card. Under the Uptime figure, a compact host-status line carries the Reboot required badge, pending updates, and that check's own time. The CPU card spans the width, with Min/Average/Peak and Load against cores in its footer. Next come three equal capacity cards: RAM (with Swap), Disk space on /, and Disk space on /data. Then Downloads (two thirds) beside Pressure (one third), then Drive health across the full width, with drives in an auto-filling grid of 240px minimum. All rows are separated by 16px. At 960px, use 24px insets. At 760px, the Uptime figure and host-status line drop below the title in their own bordered panel, cards stack, and the page uses 16px side insets, 12px gaps, and 16px card interiors. The CPU chart changes from 260px to 220px tall.
 
 Use the frontmatter spacing steps for shared rhythm, plus the documented 10/14/20/32px local insets. Login centers a panel capped at 360px with 24px page padding. Settings cap at 560px, leave 16px viewport margins, and scroll their body rather than the dialog header/footer.
 
@@ -263,7 +263,7 @@ The badge slot defaults to a 20px pill with 12px medium text. Metric badges use 
 
 ### Cards and overlays
 
-The card slot defaults to a 16px spacing variable, 12px corners, and a light outline ring. Metric cards override it with a thin border, the metric shadow, 20px interior spacing, and observation footers; phone interiors become 16px. Keep unavailable states compact and muted rather than making them oversized empty panels. Reading-info popovers use the raised neutral, a stronger rule, and a 320px maximum with 16px viewport clearance.
+The card slot defaults to a 16px spacing variable, 12px corners, and a light outline ring. Metric cards override it with a thin border, the metric shadow, and 20px interior spacing; phone interiors become 16px. Current readings share the heading's update time, so cards carry no per-reading time or "current reading" line. A footer appears only for the CPU min/average/peak summary or a stale reading's retained time. Keep unavailable states compact and muted rather than making them oversized empty panels. Reading-info popovers use the raised neutral, a stronger rule, and a 320px maximum with 16px viewport clearance.
 
 Use the Base UI dialog/popover components for focus protection, dismissal, and focus return. History is a left-edge override of the centered dialog slot. Preserve the drawer's custom-variable, two-axis translation override; it survived production minification in the prior checks. Do not replace it with a shorthand that restores the centered dialog translation.
 
@@ -287,7 +287,7 @@ Sidecar snippets are self-contained visual examples with literal CSS, inherited 
 - Do retain the exact emerald, original logo, self-hosted fonts, and dark-only palette.
 - Do keep Assistant reading at 15px/1.7, bounded by 72ch, with evidence available on demand.
 - Do use the existing slot components, protected overlay focus, 44px touch targets, and reduced-motion rules.
-- Do pair reading-state colors with words or icons and retain observation details.
+- Do pair reading-state colors with words or icons, and show a reading's own observation time when it is stale.
 
 ### Don't:
 - Don't add Sora headings, uppercase eyebrows, decorative imagery, or colored glow.

@@ -1,0 +1,13 @@
+[Unit]
+Description=Refresh Voidstation host status every 15 minutes
+
+[Timer]
+OnBootSec=2min
+OnCalendar=*:0/15
+RandomizedDelaySec=60
+AccuracySec=1min
+Persistent=true
+Unit=voidstation-host-status.service
+
+[Install]
+WantedBy=timers.target

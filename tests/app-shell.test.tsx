@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { AppShell } from "../src/components/app-shell";
 import { useServerMetrics } from "../src/components/server-metrics";
 import type { HostMetrics } from "../src/lib/metrics-contract";
+import { extendedObservations, unavailableExtended } from "./helpers/metrics-fixture";
 
 const observedAt = "2026-09-30T16:02:38.000Z";
 const capacity = { used: 50, available: 50, total: 100 };
@@ -15,6 +16,7 @@ function observations(): HostMetrics {
     ram: { status: "available", value: capacity, unit: "bytes", observedAt },
     rootFilesystem: { status: "available", value: capacity, unit: "bytes", observedAt },
     dataFilesystem: { status: "available", value: capacity, unit: "bytes", observedAt },
+    ...extendedObservations(observedAt),
   };
 }
 let payload: HostMetrics;

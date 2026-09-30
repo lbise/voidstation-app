@@ -55,7 +55,21 @@ const containerPaths = {
   },
   searxngSettings: "/etc/searxng",
   searxngSecret: "/run/voidstation-searxng/secret",
+  hostStatusDirectory: "/host/status",
+  hostStatusFile: "/host/status/status.json",
 };
+// Narrow read-only host metrics inputs: exact source to container target.
+const procMounts = [
+  ["/proc/stat", "/host/proc/stat"],
+  ["/proc/uptime", "/host/proc/uptime"],
+  ["/proc/meminfo", "/host/proc/meminfo"],
+  ["/proc/loadavg", "/host/proc/loadavg"],
+];
+const pressureSource = "/proc/pressure";
+const pressureTarget = "/host/proc/pressure";
+const pressureResources = ["cpu", "memory", "io"];
+const hostStatusInstallHint =
+  "Run sudo scripts/install-host-status.sh on the Server first.";
 
 function fail(message) {
   throw new Error(message);
@@ -424,6 +438,7 @@ function validateEnvironment(service, endpoints) {
     VOIDSTATION_HOST_PROC: "/host/proc",
     VOIDSTATION_HOST_ROOT_FS: "/host/filesystems/root",
     VOIDSTATION_HOST_DATA_FS: "/host/filesystems/data",
+    VOIDSTATION_HOST_STATUS: containerPaths.hostStatusFile,
     VOIDSTATION_WORKER_URL: `http://${workerServiceName}:${workerPort}`,
     VOIDSTATION_WORKER_TOKEN_FILE: containerPaths.workerToken,
   };
@@ -489,27 +504,25 @@ function validateVolume(volume, target, source, readOnly = true) {
 }
 function validateMountConfiguration(service, lan) {
   const volumes = requireArray(service.volumes, "dashboard.volumes");
-  if (volumes.length !== 9)
+  if (volumes.length !== 12)
     fail(
-      "dashboard must have five metrics mounts, auth data, two TLS directories, and the worker token.",
+      "dashboard must have eight metrics mounts (four proc files, pressure, host status, two filesystem probes), auth data, two TLS directories, and the worker token.",
     );
   const byTarget = new Map(volumes.map((volume) => [volume?.target, volume]));
   if (byTarget.size !== volumes.length) fail("dashboard has duplicate mounts.");
-  validateVolume(
-    byTarget.get("/host/proc/stat"),
-    "/host/proc/stat",
-    "/proc/stat",
-  );
-  validateVolume(
-    byTarget.get("/host/proc/uptime"),
-    "/host/proc/uptime",
-    "/proc/uptime",
-  );
-  validateVolume(
-    byTarget.get("/host/proc/meminfo"),
-    "/host/proc/meminfo",
-    "/proc/meminfo",
-  );
+  for (const [source, target] of procMounts)
+    validateVolume(byTarget.get(target), target, source);
+  validateVolume(byTarget.get(pressureTarget), pressureTarget, pressureSource);
+  const hostStatus = byTarget.get(containerPaths.hostStatusDirectory);
+  if (
+    hostStatus?.type !== "bind" ||
+    typeof hostStatus.source !== "string" ||
+    hostStatus.read_only !== true ||
+    hostStatus.bind?.create_host_path !== false
+  )
+    fail(
+      `The bind mount for ${containerPaths.hostStatusDirectory} must be read-only and must not create its host path.`,
+    );
   for (const target of ["/host/filesystems/root", "/host/filesystems/data"]) {
     const volume = byTarget.get(target);
     if (
@@ -548,7 +561,9 @@ function validateMountConfiguration(service, lan) {
   const token = byTarget.get(containerPaths.workerToken);
   validateVolume(token, containerPaths.workerToken, token?.source);
   return {
-    proc: ["/proc/stat", "/proc/uptime", "/proc/meminfo"],
+    proc: procMounts.map(([source]) => source),
+    pressure: pressureSource,
+    hostStatus: hostStatus.source,
     root: byTarget.get("/host/filesystems/root").source,
     data: byTarget.get("/host/filesystems/data").source,
     auth: auth.source,
@@ -763,6 +778,16 @@ function validateFilesystemProbes(probes, expectedDataUuid) {
   for (const source of probes.proc) {
     checkedPath(source, `Proc file ${source}`, false);
     requireAccess(source, `Proc file ${source}`, fs.constants.R_OK);
+  }
+  if (!fs.existsSync(probes.pressure))
+    fail(
+      `${probes.pressure} is absent. The kernel must provide pressure stall information (CONFIG_PSI, not disabled with psi=0).`,
+    );
+  checkedPath(probes.pressure, `Pressure directory ${probes.pressure}`, true);
+  for (const resource of pressureResources) {
+    const source = path.join(probes.pressure, resource);
+    checkedPath(source, `Pressure file ${source}`, false);
+    requireAccess(source, `Pressure file ${source}`, fs.constants.R_OK);
   }
   const root = checkedPath(probes.root, "Root filesystem probe", true);
   const data = checkedPath(probes.data, "Data filesystem probe", true);
@@ -1035,6 +1060,7 @@ function validateSeparateStatePaths(probes, worker, searxng) {
     ["Tailscale TLS", probes.tls],
     ["LAN TLS", probes.lanTls],
     ["SearXNG secret", searxng.secret],
+    ["host status", probes.hostStatus],
   ];
   for (let index = 0; index < statePaths.length; index += 1) {
     for (let other = index + 1; other < statePaths.length; other += 1) {
@@ -1049,6 +1075,47 @@ function validateSeparateStatePaths(probes, worker, searxng) {
   }
 }
 
+function isSymbolicLink(pathname) {
+  try {
+    return fs.lstatSync(pathname).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+function validateHostStatus(source) {
+  if (
+    typeof source !== "string" ||
+    !path.isAbsolute(source) ||
+    source !== path.resolve(source)
+  )
+    fail("Host status directory must be a normalized absolute path.");
+  if (!fs.existsSync(source))
+    fail(`Host status directory ${source} is missing. ${hostStatusInstallHint}`);
+  const directory = checkedPath(source, "Host status directory", true);
+  // Only the root helper may write status; UID 1000 reads it through "other".
+  if (
+    directory.uid !== 0 ||
+    (directory.mode & 0o022) !== 0 ||
+    (directory.mode & 0o005) !== 0o005
+  )
+    fail(
+      `Host status directory ${source} must be owned by root with mode 0755. ${hostStatusInstallHint}`,
+    );
+  const file = path.join(source, "status.json");
+  // A missing file only means the helper has not run yet; a link is not missing.
+  if (!fs.existsSync(file) && !isSymbolicLink(file))
+    return { directory: source, file: undefined };
+  const status = checkedPath(file, "Host status file", false);
+  if (
+    status.uid !== 0 ||
+    (status.mode & 0o022) !== 0 ||
+    (status.mode & 0o004) === 0
+  )
+    fail(
+      `Host status file ${file} must be owned by root, readable by others, and not writable by group or others.`,
+    );
+  return { directory: source, file };
+}
 function validateAuthDirectory(source) {
   const stat = checkedPath(source, "Auth-data directory", true);
   requireAccess(
@@ -1204,9 +1271,16 @@ function validateCertificate(
   if (!publicKey || publicKey !== privateKey)
     fail(`${description} certificate and private key do not match.`);
 }
-function validateRuntimeAccess(probes, worker) {
+function validateRuntimeAccess(probes, worker, hostStatus) {
   const inputs = [
     ...probes.proc.map((source) => [source, fs.constants.R_OK]),
+    [probes.pressure, fs.constants.R_OK | fs.constants.X_OK],
+    ...pressureResources.map((resource) => [
+      path.join(probes.pressure, resource),
+      fs.constants.R_OK,
+    ]),
+    [hostStatus.directory, fs.constants.R_OK | fs.constants.X_OK],
+    ...(hostStatus.file ? [[hostStatus.file, fs.constants.R_OK]] : []),
     ...[probes.root, probes.data, probes.tls, probes.lanTls].map((source) => [
       source,
       fs.constants.R_OK | fs.constants.X_OK,
@@ -1692,6 +1766,7 @@ function validateDashboardInspection(container, endpoints, probes, origins) {
     VOIDSTATION_HOST_PROC: "/host/proc",
     VOIDSTATION_HOST_ROOT_FS: "/host/filesystems/root",
     VOIDSTATION_HOST_DATA_FS: "/host/filesystems/data",
+    VOIDSTATION_HOST_STATUS: containerPaths.hostStatusFile,
     VOIDSTATION_WORKER_URL: `http://${workerServiceName}:${workerPort}`,
     VOIDSTATION_WORKER_TOKEN_FILE: containerPaths.workerToken,
   };
@@ -1718,9 +1793,9 @@ function validateDashboardInspection(container, endpoints, probes, origins) {
   )
     fail("The deployed dashboard network changed.");
   const expectedMounts = new Map([
-    ["/host/proc/stat", ["/proc/stat", false]],
-    ["/host/proc/uptime", ["/proc/uptime", false]],
-    ["/host/proc/meminfo", ["/proc/meminfo", false]],
+    ...procMounts.map(([source, target]) => [target, [source, false]]),
+    [pressureTarget, [pressureSource, false]],
+    [containerPaths.hostStatusDirectory, [probes.hostStatus, false]],
     ["/host/filesystems/root", [probes.root, false]],
     ["/host/filesystems/data", [probes.data, false]],
     [containerPaths.authDirectory, [probes.auth, true]],
@@ -2108,12 +2183,13 @@ async function main() {
   const searxngProbes = validateSearxngConfiguration(searxng);
   validateFilesystemProbes(probes, policy.dataUuid);
   validateAuthDirectory(probes.auth);
+  const hostStatus = validateHostStatus(probes.hostStatus);
   validateWorkerState(workerProbes);
   validateSearxngState(searxngProbes, workerProbes.token);
   validateCertificate(probes.tls, origins.tsHostname, "Tailscale TLS");
   validateCertificate(probes.lanTls, policy.lan.address, "LAN TLS", true);
   validateSeparateStatePaths(probes, workerProbes, searxngProbes);
-  validateRuntimeAccess(probes, workerProbes);
+  validateRuntimeAccess(probes, workerProbes, hostStatus);
   validateSearxngRuntimeAccess(searxngProbes);
   tailscaleStatus(endpoints.tailscale, origins.tsHostname);
   validateLanInterface(policy.lan);

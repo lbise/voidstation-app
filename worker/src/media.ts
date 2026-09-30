@@ -8,7 +8,7 @@ import type { MediaChoice, MediaResult, MediaStatus, MediaType, MediaOperation, 
 export type { MediaChoice, MediaResult, MediaStatus, MediaType } from "./media-contract.ts";
 type MediaErrorCode = "invalid_request" | "configuration" | "service_unavailable" | "timed_out" | "cancelled" | "invalid_response";
 
-interface ServiceConfig {
+export interface ServiceConfig {
   endpoint: string;
   keyFile: string;
   rootFolder: string;
@@ -28,7 +28,7 @@ const PYTHON = "python3";
 const SCRIPT_ROOT = process.env.VOIDSTATION_MEDIA_SCRIPT_DIR ?? "/app/media/upstream";
 const CHILD_PATH = "/usr/local/bin:/usr/bin:/bin";
 
-class MediaToolError extends Error {
+export class MediaToolError extends Error {
   constructor(public readonly code: MediaErrorCode, message: string) {
     super(message);
   }
@@ -49,7 +49,7 @@ function processErrorMessage(code: ProcessError["code"]): string {
   }
 }
 
-function isRecord(value: unknown): value is JsonRecord {
+export function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -82,7 +82,7 @@ function safeEndpoint(value: unknown): string | undefined {
   }
 }
 
-function parseServiceConfig(value: unknown, service: MediaService): ServiceConfig | undefined {
+export function parseServiceConfig(value: unknown, service: MediaService): ServiceConfig | undefined {
   const keys = ["endpoint", "keyFile", "rootFolder", "defaultQualityProfileId", "qualityMappings"];
   if (service === "sonarr" && isRecord(value) && Object.hasOwn(value, "languageProfileId")) keys.push("languageProfileId");
   if (!isRecord(value) || !exactKeys(value, keys)) return undefined;
@@ -102,17 +102,21 @@ function parseServiceConfig(value: unknown, service: MediaService): ServiceConfi
   return { endpoint, keyFile, rootFolder, defaultQualityProfileId: value.defaultQualityProfileId, ...(positiveInteger(value.languageProfileId) ? { languageProfileId: value.languageProfileId } : {}), qualityMappings };
 }
 
-async function loadConfig(): Promise<MediaConfig> {
+/** Reads the media configuration file without interpreting it. */
+export async function readConfigSource(): Promise<string> {
   const file = process.env.VOIDSTATION_MEDIA_CONFIG_FILE;
   if (!file || !isAbsolute(file)) throw new MediaToolError("configuration", "Media configuration is unavailable.");
-  let source: string;
   try {
     const info = await lstat(file);
     if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_CONFIG_BYTES) throw new Error("invalid config file");
-    source = await readFile(file, "utf8");
+    return await readFile(file, "utf8");
   } catch {
     throw new MediaToolError("configuration", "Media configuration is unavailable.");
   }
+}
+
+async function loadConfig(): Promise<MediaConfig> {
+  const source = await readConfigSource();
   try {
     const value = JSON.parse(source) as unknown;
     if (!isRecord(value) || !exactKeys(value, ["radarr", "sonarr"])) throw new Error("invalid config");
@@ -152,7 +156,28 @@ function killChild(child: ChildProcess): void {
   try { child.kill("SIGTERM"); } catch { /* The child may have exited. */ }
 }
 
-async function runPython(service: MediaService, config: ServiceConfig, args: readonly string[], signal?: AbortSignal): Promise<unknown> {
+export interface PythonOptions {
+  /** Defaults to the tool budget; the Dashboard queue projection is larger. */
+  maxOutputBytes?: number;
+  timeoutMs?: number;
+  /** Map the restricted adapter's fixed failure codes instead of reporting every non-zero exit as unavailable. */
+  detailedFailures?: boolean;
+}
+
+function adapterFailure(output: string): MediaToolError {
+  try {
+    const value = JSON.parse(output) as unknown;
+    const code = isRecord(value) && value.ok === false && isRecord(value.error) ? value.error.code : undefined;
+    if (code === "timeout") return new ProcessError("timed_out");
+    if (code === "invalid_response") return new ProcessError("invalid_response");
+    if (code === "invalid_configuration") return new MediaToolError("configuration", "The media service configuration is invalid.");
+  } catch { /* Unparseable failure output is treated as an unavailable service. */ }
+  return new ProcessError("service_unavailable");
+}
+
+export async function runPython(service: MediaService, config: ServiceConfig, args: readonly string[], signal?: AbortSignal, options: PythonOptions = {}): Promise<unknown> {
+  const maxOutputBytes = options.maxOutputBytes ?? MAX_PROCESS_OUTPUT_BYTES;
+  const timeoutMs = options.timeoutMs ?? PROCESS_TIMEOUT_MS;
   if (signal?.aborted) throw new ProcessError("cancelled");
   const key = await readApiKey(config.keyFile);
   const keyName = service === "radarr" ? "RADARR_API_KEY" : "SONARR_API_KEY";
@@ -199,20 +224,20 @@ async function runPython(service: MediaService, config: ServiceConfig, args: rea
     const timeout = setTimeout(() => {
       killChild(child);
       finish(new ProcessError("timed_out"));
-    }, PROCESS_TIMEOUT_MS);
+    }, timeoutMs);
     signal?.addEventListener("abort", onAbort, { once: true });
     child.on("error", () => finish(new ProcessError("service_unavailable")));
     child.stdout?.on("data", (chunk: Buffer) => {
       if (finished) return;
       output += chunk.toString("utf8");
-      if (Buffer.byteLength(output) > MAX_PROCESS_OUTPUT_BYTES) {
+      if (Buffer.byteLength(output) > maxOutputBytes) {
         killChild(child);
         finish(new ProcessError("invalid_response"));
       }
     });
     child.on("close", (code) => {
       if (finished) return;
-      if (code !== 0) return finish(new ProcessError("service_unavailable"));
+      if (code !== 0) return finish(options.detailedFailures ? adapterFailure(output) : new ProcessError("service_unavailable"));
       try {
         finish(undefined, JSON.parse(output) as unknown);
       } catch {

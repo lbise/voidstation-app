@@ -23,6 +23,7 @@ interface ServiceFixture {
   qualityProfiles: unknown[];
   queue: unknown[];
   episodes: unknown[];
+  queueFailure?: { status: number; body: unknown };
 }
 
 export interface FakeMedia {
@@ -34,6 +35,8 @@ export interface FakeMedia {
   setLookup(service: MediaService, values: unknown[]): void;
   setTracked(service: MediaService, values: unknown[]): void;
   setQueue(service: MediaService, values: unknown[]): void;
+  /** Makes GET /queue answer with a fixed HTTP status and body instead of records. */
+  setQueueFailure(service: MediaService, failure: { status: number; body: unknown } | undefined): void;
   setEpisodes(service: MediaService, values: unknown[]): void;
   close(): Promise<void>;
 }
@@ -92,7 +95,14 @@ async function startService(service: MediaService, requests: MediaRequest[]) {
     if (request.method === "GET" && (resource === "/movie" || resource === "/series")) return send(response, 200, fixture.tracked);
     if (request.method === "GET" && resource === "/rootfolder") return send(response, 200, fixture.rootFolders);
     if (request.method === "GET" && resource === "/qualityprofile") return send(response, 200, fixture.qualityProfiles);
-    if (request.method === "GET" && resource === "/queue") return send(response, 200, { records: fixture.queue });
+    if (request.method === "GET" && resource === "/queue") {
+      if (fixture.queueFailure) return send(response, fixture.queueFailure.status, fixture.queueFailure.body);
+      // Paginate like Radarr/Sonarr so callers must respect totalRecords.
+      const page = Math.max(1, Number(url.searchParams.get("page") ?? "1") || 1);
+      const pageSize = Math.max(1, Number(url.searchParams.get("pageSize") ?? "10") || 10);
+      const records = fixture.queue.slice((page - 1) * pageSize, page * pageSize);
+      return send(response, 200, { page, pageSize, sortKey: "timeleft", sortDirection: "ascending", totalRecords: fixture.queue.length, records });
+    }
     if (request.method === "GET" && resource === "/episode") return send(response, 200, fixture.episodes);
     if (request.method === "POST" && (resource === "/movie" || resource === "/series")) {
       const payload = requestBody && typeof requestBody === "object" ? { ...(requestBody as Record<string, unknown>), id: 100 } : { id: 100 };
@@ -113,6 +123,7 @@ async function startService(service: MediaService, requests: MediaRequest[]) {
     setLookup(values: unknown[]) { fixture.lookup = values; },
     setTracked(values: unknown[]) { fixture.tracked = values; },
     setQueue(values: unknown[]) { fixture.queue = values; },
+    setQueueFailure(failure: { status: number; body: unknown } | undefined) { fixture.queueFailure = failure; },
     setEpisodes(values: unknown[]) { fixture.episodes = values; },
     async close() {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
@@ -159,10 +170,43 @@ export async function fakeMedia(): Promise<FakeMedia> {
     setLookup(service, values) { (service === "radarr" ? radarr : sonarr).setLookup(values); },
     setTracked(service, values) { (service === "radarr" ? radarr : sonarr).setTracked(values); },
     setQueue(service, values) { (service === "radarr" ? radarr : sonarr).setQueue(values); },
+    setQueueFailure(service, failure) { (service === "radarr" ? radarr : sonarr).setQueueFailure(failure); },
     setEpisodes(service, values) { (service === "radarr" ? radarr : sonarr).setEpisodes(values); },
     async close() {
       await Promise.all([radarr.close(), sonarr.close()]);
       await rm(directory, { recursive: true, force: true });
     },
+  };
+}
+
+/** Leak canaries: fields a real queue record carries that must never reach the Dashboard. */
+export const QUEUE_CANARIES = {
+  outputPath: "/downloads/secret-output-path-canary",
+  downloadClient: "download-client-canary",
+  indexer: "indexer-canary",
+  releaseTitle: "Release.Title.Canary.1080p",
+} as const;
+
+/** A realistic Radarr/Sonarr queue record (API v3 shape) with extra upstream fields. */
+export function queueRecord(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 1,
+    downloadId: "ABCDEF0123456789",
+    title: QUEUE_CANARIES.releaseTitle,
+    status: "downloading",
+    trackedDownloadStatus: "ok",
+    trackedDownloadState: "downloading",
+    statusMessages: [],
+    size: 1_000,
+    sizeleft: 250,
+    timeleft: "00:10:00",
+    estimatedCompletionTime: "2030-01-01T00:10:00Z",
+    protocol: "torrent",
+    downloadClient: QUEUE_CANARIES.downloadClient,
+    indexer: QUEUE_CANARIES.indexer,
+    outputPath: QUEUE_CANARIES.outputPath,
+    quality: { quality: { id: 7, name: "Bluray-1080p" } },
+    customFormats: [{ id: 1, name: "custom-format-canary" }],
+    ...overrides,
   };
 }

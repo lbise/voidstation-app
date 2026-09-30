@@ -7,7 +7,7 @@ import { authError, hasSession, hasValidOrigin } from "@/lib/auth-http";
 const headers = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" };
 const unavailable = () => authError("The Assistant worker is unavailable. Your saved conversations have not been deleted. Dashboard access is still available.", 503);
 
-function workerConfiguration() {
+export function workerConfiguration() {
   const url = new URL(process.env.VOIDSTATION_WORKER_URL ?? "");
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
     throw new Error("Invalid worker URL");

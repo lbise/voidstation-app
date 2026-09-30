@@ -3,7 +3,9 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 
 import { useCpuHistory, type CpuHistory } from "@/components/cpu-history";
-import type { DiskSpace, HostMetrics, Measurement, RamUsage } from "@/lib/metrics-contract";
+import type {
+  DiskSpace, DriveHealth, HostMetrics, HostStatus, LoadAverage, Measurement, Pressure, RamUsage, SwapUsage,
+} from "@/lib/metrics-contract";
 
 const POLL_INTERVAL_MS = 5_000;
 const REQUEST_TIMEOUT_MS = 4_000;
@@ -19,9 +21,17 @@ export type DashboardState = {
   cpu: MetricState<number, "percent">;
   uptime: MetricState<number, "seconds">;
   ram: MetricState<RamUsage, "bytes">;
+  swap: MetricState<SwapUsage, "bytes">;
+  load: MetricState<LoadAverage, "tasks">;
+  pressure: MetricState<Pressure, "percent">;
   rootFilesystem: MetricState<DiskSpace, "bytes">;
   dataFilesystem: MetricState<DiskSpace, "bytes">;
+  hostStatus: MetricState<HostStatus, "status">;
 };
+
+const METRIC_KEYS = [
+  "cpu", "uptime", "ram", "swap", "load", "pressure", "rootFilesystem", "dataFilesystem", "hostStatus",
+] as const satisfies readonly (keyof DashboardState)[];
 
 export type ReadingStatus = "loading" | "available" | "stale" | "unavailable";
 export type ServerMetricsContextValue = {
@@ -47,8 +57,12 @@ const initialState: DashboardState = {
   cpu: emptyMetric<number, "percent">(),
   uptime: emptyMetric<number, "seconds">(),
   ram: emptyMetric<RamUsage, "bytes">(),
+  swap: emptyMetric<SwapUsage, "bytes">(),
+  load: emptyMetric<LoadAverage, "tasks">(),
+  pressure: emptyMetric<Pressure, "percent">(),
   rootFilesystem: emptyMetric<DiskSpace, "bytes">(),
   dataFilesystem: emptyMetric<DiskSpace, "bytes">(),
+  hostStatus: emptyMetric<HostStatus, "status">(),
 };
 
 function reconcileMetric<T, U extends string>(
@@ -61,6 +75,15 @@ function reconcileMetric<T, U extends string>(
 
 function retainAfterRequestFailure<T, U extends string>(previous: MetricState<T, U>): MetricState<T, U> {
   return previous.measurement ? { ...previous, stale: true } : previous;
+}
+
+/**
+ * Readings sampled on every refresh. Host status is excluded: it comes from a periodic
+ * check on the Server, so its absence or age does not make the live readings partial.
+ */
+export function liveReadings(metrics: DashboardState): MetricState<unknown, string>[] {
+  const { hostStatus: _hostStatus, ...live } = metrics;
+  return Object.values(live);
 }
 
 export function readingStatus(
@@ -83,7 +106,7 @@ function isByteCount(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
-function isUnavailableMeasurement(value: unknown, unit: "seconds" | "bytes" | "percent"): boolean {
+function isUnavailableMeasurement(value: unknown, unit: string): boolean {
   return isRecord(value) && value.status === "unavailable" && value.value === null &&
     value.unit === unit && value.observedAt === null;
 }
@@ -115,22 +138,93 @@ function isByteMeasurement(
     (requireExactArithmetic ? used === total - available : used + available <= total);
 }
 
-function isHostMetrics(value: unknown): value is HostMetrics {
-  return isRecord(value) && isCpuMeasurement(value.cpu) && isUptimeMeasurement(value.uptime) &&
-    isByteMeasurement(value.ram, true) && isByteMeasurement(value.rootFilesystem, false) &&
-    isByteMeasurement(value.dataFilesystem, false);
+function isAvailable(value: unknown, unit: string): value is { value: Record<string, unknown> } {
+  return isRecord(value) && value.status === "available" && value.unit === unit &&
+    isObservedAt(value.observedAt) && isRecord(value.value);
 }
 
-export function formatUptime(seconds: number): string {
-  if (seconds === 0) return "0 seconds";
+function isNumberBetween(value: unknown, min: number, max = Number.MAX_SAFE_INTEGER): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
+}
+
+function isCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isSwapMeasurement(value: unknown): value is HostMetrics["swap"] {
+  if (isUnavailableMeasurement(value, "bytes")) return true;
+  if (!isAvailable(value, "bytes")) return false;
+  const { used, total } = value.value;
+  return isByteCount(used) && isByteCount(total) && used <= total;
+}
+
+function isLoadMeasurement(value: unknown): value is HostMetrics["load"] {
+  if (isUnavailableMeasurement(value, "tasks")) return true;
+  if (!isAvailable(value, "tasks")) return false;
+  const { one, five, fifteen, cores } = value.value;
+  return isNumberBetween(one, 0) && isNumberBetween(five, 0) && isNumberBetween(fifteen, 0) &&
+    isCount(cores) && cores >= 1;
+}
+
+function isPressureMeasurement(value: unknown): value is HostMetrics["pressure"] {
+  if (isUnavailableMeasurement(value, "percent")) return true;
+  if (!isAvailable(value, "percent")) return false;
+  return [value.value.cpu, value.value.memory, value.value.io].every((stall) =>
+    isRecord(stall) && isNumberBetween(stall.avg10, 0, 100) && isNumberBetween(stall.avg60, 0, 100));
+}
+
+function isNullable<T>(value: unknown, check: (value: unknown) => value is T): value is T | null {
+  return value === null || check(value);
+}
+
+function isDriveHealth(value: unknown): value is DriveHealth {
+  return isRecord(value) && typeof value.device === "string" && value.device.length > 0 &&
+    (value.model === null || typeof value.model === "string") &&
+    (value.passed === null || typeof value.passed === "boolean") && typeof value.standby === "boolean" &&
+    isNullable(value.temperatureCelsius, (item): item is number => isNumberBetween(item, -40, 200)) &&
+    isNullable(value.powerOnHours, isCount) && isNullable(value.reallocatedSectors, isCount) &&
+    isNullable(value.pendingSectors, isCount) && isNullable(value.mediaErrors, isCount) &&
+    isNullable(value.percentageUsed, isCount);
+}
+
+function isHostStatusMeasurement(value: unknown): value is HostMetrics["hostStatus"] {
+  if (isUnavailableMeasurement(value, "status")) return true;
+  if (!isAvailable(value, "status")) return false;
+  const { rebootRequired, rebootPackages, updates, drives } = value.value;
+  return typeof rebootRequired === "boolean" &&
+    Array.isArray(rebootPackages) && rebootPackages.length <= 20 &&
+    rebootPackages.every((name) => typeof name === "string") &&
+    (updates === null || (isRecord(updates) && isCount(updates.total) && isCount(updates.security) &&
+      updates.security <= updates.total)) &&
+    (drives === null || (Array.isArray(drives) && drives.length <= 32 && drives.every(isDriveHealth)));
+}
+
+function isHostMetrics(value: unknown): value is HostMetrics {
+  return isRecord(value) && isCpuMeasurement(value.cpu) && isUptimeMeasurement(value.uptime) &&
+    isByteMeasurement(value.ram, true) && isSwapMeasurement(value.swap) && isLoadMeasurement(value.load) &&
+    isPressureMeasurement(value.pressure) && isByteMeasurement(value.rootFilesystem, false) &&
+    isByteMeasurement(value.dataFilesystem, false) && isHostStatusMeasurement(value.hostStatus);
+}
+
+type AnyMetric = MetricState<unknown, string>;
+
+function mapMetrics(map: (key: keyof DashboardState) => AnyMetric): DashboardState {
+  return Object.fromEntries(METRIC_KEYS.map((key) => [key, map(key)])) as unknown as DashboardState;
+}
+
+export function uptimeParts(seconds: number): { value: number; unit: string }[] {
   const parts = [["day", 86_400], ["hour", 3_600], ["minute", 60]] as const;
   let remainder = Math.max(0, Math.floor(seconds));
   const formatted = parts.flatMap(([unit, duration]) => {
     const value = Math.floor(remainder / duration);
     remainder %= duration;
-    return value > 0 ? [`${value} ${unit}${value === 1 ? "" : "s"}`] : [];
+    return value > 0 ? [{ value, unit: `${unit}${value === 1 ? "" : "s"}` }] : [];
   });
-  return formatted.length > 0 ? formatted.join(" ") : `${remainder} seconds`;
+  return formatted.length > 0 ? formatted : [{ value: remainder, unit: "seconds" }];
+}
+
+export function formatUptime(seconds: number): string {
+  return uptimeParts(seconds).map(({ value, unit }) => `${value} ${unit}`).join(" ");
 }
 
 export function formatGiB(bytes: number): string {
@@ -149,8 +243,10 @@ export function formatCpu(value: number): string {
 }
 
 export function formatObservedAt(observedAt: string): string {
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium" })
-    .format(new Date(observedAt));
+  const date = new Date(observedAt);
+  const today = date.toDateString() === new Date().toDateString();
+  return new Intl.DateTimeFormat(undefined, today ? { timeStyle: "medium" } : { dateStyle: "medium", timeStyle: "medium" })
+    .format(date);
 }
 
 const ServerMetricsContext = createContext<ServerMetricsContextValue | null>(null);
@@ -198,26 +294,15 @@ export function ServerMetricsProvider({ children }: { children: ReactNode }) {
         if (!isHostMetrics(payload)) throw new Error("Metrics response did not match the expected contract");
 
         if (!disposed && !controller.signal.aborted) {
-          setMetrics((previous) => ({
-            cpu: reconcileMetric(previous.cpu, payload.cpu),
-            uptime: reconcileMetric(previous.uptime, payload.uptime),
-            ram: reconcileMetric(previous.ram, payload.ram),
-            rootFilesystem: reconcileMetric(previous.rootFilesystem, payload.rootFilesystem),
-            dataFilesystem: reconcileMetric(previous.dataFilesystem, payload.dataFilesystem),
-          }));
+          setMetrics((previous) => mapMetrics((key) =>
+            reconcileMetric(previous[key] as AnyMetric, payload[key] as Measurement<unknown, string>)));
           setInitialLoading(false);
           setRequestFailure(false);
         }
       } catch {
         const abortedWithoutTimeout = controller.signal.aborted && !request.timedOut;
         if (!disposed && !abortedWithoutTimeout) {
-          setMetrics((previous) => ({
-            cpu: retainAfterRequestFailure(previous.cpu),
-            uptime: retainAfterRequestFailure(previous.uptime),
-            ram: retainAfterRequestFailure(previous.ram),
-            rootFilesystem: retainAfterRequestFailure(previous.rootFilesystem),
-            dataFilesystem: retainAfterRequestFailure(previous.dataFilesystem),
-          }));
+          setMetrics((previous) => mapMetrics((key) => retainAfterRequestFailure(previous[key] as AnyMetric)));
           setInitialLoading(false);
           setRequestFailure(true);
         }

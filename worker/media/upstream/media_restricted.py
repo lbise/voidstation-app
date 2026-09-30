@@ -246,6 +246,114 @@ def _queue_entries(service: str, client: Any, library_id: int) -> list[dict[str,
     return entries[:MAX_RESULTS]
 
 
+QUEUE_PAGE_SIZE = 200
+# Slightly above the Dashboard's 200-character problem limit so the worker can
+# tell that text was cut and mark it; identifiers and states are much shorter.
+QUEUE_TEXT_LENGTH = 240
+QUEUE_TOKEN_LENGTH = 128
+QUEUE_STATUS_MESSAGES = 3
+QUEUE_MESSAGES_PER_STATUS = 2
+
+
+def _size(value: object) -> int | None:
+    # Radarr and Sonarr serialize sizes as JSON decimals, so whole-number floats
+    # are accepted and rounded; negative, boolean, and non-finite values are not.
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        return None
+    return int(round(value)) if value >= 0 else None
+
+
+def _status_messages(value: object) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    for item in _items(value)[:QUEUE_STATUS_MESSAGES]:
+        entry: dict[str, Any] = {}
+        title = _text(item.get("title"), QUEUE_TEXT_LENGTH)
+        if title is not None:
+            entry["title"] = title
+        raw = item.get("messages")
+        texts = [text for message in raw[:QUEUE_MESSAGES_PER_STATUS] if (text := _text(message, QUEUE_TEXT_LENGTH)) is not None] if isinstance(raw, list) else []
+        if texts:
+            entry["messages"] = texts
+        if entry:
+            messages.append(entry)
+    return messages
+
+
+def _queue(service: str, client: Any) -> dict[str, Any]:
+    """Read-only projection of the whole download queue for the Dashboard."""
+    params: dict[str, Any] = {"page": 1, "pageSize": QUEUE_PAGE_SIZE}
+    if service == "radarr":
+        params["includeMovie"] = True
+    else:
+        params["includeSeries"] = True
+        params["includeEpisode"] = True
+    response = client.request("GET", "/queue", params=params)
+    if isinstance(response, dict):
+        raw_records = response.get("records")
+        if not isinstance(raw_records, list):
+            raise RuntimeError("response")
+    elif isinstance(response, list):
+        raw_records = response
+    else:
+        raise RuntimeError("response")
+    records: list[dict[str, Any]] = []
+    for item in _items(raw_records)[:QUEUE_PAGE_SIZE]:
+        record: dict[str, Any] = {}
+        queue_id = _positive_integer(item.get("id"))
+        if queue_id is not None:
+            record["id"] = queue_id
+        for key, limit in (
+            ("downloadId", QUEUE_TOKEN_LENGTH),
+            ("status", QUEUE_TOKEN_LENGTH),
+            ("trackedDownloadStatus", QUEUE_TOKEN_LENGTH),
+            ("trackedDownloadState", QUEUE_TOKEN_LENGTH),
+            ("estimatedCompletionTime", QUEUE_TOKEN_LENGTH),
+            ("errorMessage", QUEUE_TEXT_LENGTH),
+        ):
+            value = _text(item.get(key), limit)
+            if value is not None:
+                record[key] = value
+        for output_key, input_key in (("size", "size"), ("sizeLeft", "sizeleft")):
+            value = _size(item.get(input_key))
+            if value is not None:
+                record[output_key] = value
+        status_messages = _status_messages(item.get("statusMessages"))
+        if status_messages:
+            record["statusMessages"] = status_messages
+        if service == "radarr":
+            movie = item.get("movie")
+            if isinstance(movie, dict):
+                title = _text(movie.get("title"), QUEUE_TEXT_LENGTH)
+                year = _positive_integer(movie.get("year"))
+                if title is not None:
+                    record["mediaTitle"] = title
+                if year is not None:
+                    record["year"] = year
+        else:
+            series = item.get("series")
+            episode = item.get("episode")
+            if isinstance(series, dict):
+                title = _text(series.get("title"), QUEUE_TEXT_LENGTH)
+                if title is not None:
+                    record["mediaTitle"] = title
+            season = _integer(item.get("seasonNumber"))
+            if isinstance(episode, dict):
+                if season is None:
+                    season = _integer(episode.get("seasonNumber"))
+                episode_number = _integer(episode.get("episodeNumber"))
+                if episode_number is not None and episode_number >= 0:
+                    record["episodeNumber"] = episode_number
+            if season is not None and season >= 0:
+                record["seasonNumber"] = season
+        records.append(record)
+    result: dict[str, Any] = {"ok": True, "action": "queue", "service": service, "records": records}
+    total = _integer(response.get("totalRecords")) if isinstance(response, dict) else None
+    result["totalRecords"] = total if total is not None and total >= len(records) else len(records)
+    return result
+
+
 def _status(service: str, client: Any, identity: int) -> dict[str, Any]:
     resource = "movie" if service == "radarr" else "series"
     identity_key = "tmdbId" if service == "radarr" else "tvdbId"
@@ -410,6 +518,7 @@ def run(
     search.add_argument("--monitoring", choices=["all", "future", "none", "seasons"])
     search.add_argument("--seasons")
     commands.add_parser("configuration")
+    commands.add_parser("queue")
     status = commands.add_parser("status")
     status.add_argument("--id", type=int, required=True)
     args = parser.parse_args(argv)
@@ -431,6 +540,8 @@ def run(
             payload = _search(service, client, args.id, args.monitoring, _validate_seasons(args.seasons))
         elif args.action == "configuration":
             payload = _configuration(service, client)
+        elif args.action == "queue":
+            payload = _queue(service, client)
         else:
             payload = _status(service, client, args.id)
     except ValueError as error:

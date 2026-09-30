@@ -2,7 +2,7 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { request as httpsRequest } from "node:https";
 import { request as httpRequest } from "node:http";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { checkServerIdentity } from "node:tls";
 import { tmpdir } from "node:os";
@@ -24,6 +24,8 @@ let lanCertificate: Buffer;
 const password = "test-owner-password-7";
 const recoveredPassword = "recovered-owner-password-7";
 const hostname = "voidstation.test-tailnet.ts.net";
+// The helper's check time, deliberately older than the request.
+const checkedAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
 
 function owner(command: "bootstrap" | "recover", secret = password) {
   return execFileSync(process.execPath, ["scripts/owner.ts", command, "--password-stdin"], {
@@ -85,9 +87,24 @@ beforeAll(async () => {
   directory = await mkdtemp(join(tmpdir(), "voidstation-http-"));
   // /dev/shm gives the integration test a filesystem identity distinct from /tmp.
   dataDirectory = await mkdtemp(join("/dev/shm", "voidstation-http-data-"));
-  await writeFile(join(directory, "stat"), "cpu  100 20 30 40 10 0 0 0 0 0\n");
+  await writeFile(join(directory, "stat"), "cpu  100 20 30 40 10 0 0 0 0 0\ncpu0 50 10 15 20 5 0 0 0 0 0\ncpu1 50 10 15 20 5 0 0 0 0 0\n");
   await writeFile(join(directory, "uptime"), "90061.25 180000.00\n");
-  await writeFile(join(directory, "meminfo"), "MemTotal: 8388608 kB\nMemAvailable: 3145728 kB\n");
+  await writeFile(join(directory, "meminfo"), "MemTotal: 8388608 kB\nMemAvailable: 3145728 kB\nSwapTotal: 2097152 kB\nSwapFree: 1572864 kB\n");
+  await writeFile(join(directory, "loadavg"), "0.58 1.25 2.00 1/1287 2548459\n");
+  await mkdir(join(directory, "pressure"));
+  for (const resource of ["cpu", "memory", "io"]) {
+    await writeFile(join(directory, "pressure", resource),
+      "some avg10=1.50 avg60=0.75 avg300=0.10 total=123456\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n");
+  }
+  await mkdir(join(directory, "host-status"));
+  await writeFile(join(directory, "host-status", "status.json"), JSON.stringify({
+    version: 1, checkedAt, rebootRequired: true, rebootPackages: ["linux-base"],
+    updates: { total: 4, security: 1 },
+    drives: [{
+      device: "sda", model: "Fixture Disk", passed: true, standby: false, temperatureCelsius: 33,
+      powerOnHours: 100, reallocatedSectors: 0, pendingSectors: 0, mediaErrors: null, percentageUsed: null,
+    }],
+  }));
 
   const reservation = createServer();
   reservation.listen(0, "127.0.0.1");
@@ -132,6 +149,7 @@ beforeAll(async () => {
       VOIDSTATION_HOST_PROC: directory,
       VOIDSTATION_HOST_ROOT_FS: directory,
       VOIDSTATION_HOST_DATA_FS: dataDirectory,
+      VOIDSTATION_HOST_STATUS: join(directory, "host-status", "status.json"),
       NEXT_TELEMETRY_DISABLED: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -248,7 +266,33 @@ it("serves real host measurements, fresh observations, partial failure and recov
     status: "available", unit: "bytes", observedAt: expect.any(String),
     value: { total: 8589934592, available: 3221225472, used: 5368709120 },
   });
-  for (const metric of [metrics.uptime, metrics.ram, metrics.rootFilesystem, metrics.dataFilesystem]) {
+  expect(metrics.swap).toEqual({
+    status: "available", unit: "bytes", observedAt: expect.any(String),
+    value: { total: 2147483648, used: 536870912 },
+  });
+  expect(metrics.load).toEqual({
+    status: "available", unit: "tasks", observedAt: expect.any(String),
+    value: { one: 0.58, five: 1.25, fifteen: 2, cores: 2 },
+  });
+  expect(metrics.pressure).toEqual({
+    status: "available", unit: "percent", observedAt: expect.any(String),
+    value: {
+      cpu: { avg10: 1.5, avg60: 0.75 }, memory: { avg10: 1.5, avg60: 0.75 }, io: { avg10: 1.5, avg60: 0.75 },
+    },
+  });
+  // Host status carries the helper's check time, not the request time.
+  expect(metrics.hostStatus).toEqual({
+    status: "available", unit: "status", observedAt: checkedAt,
+    value: {
+      rebootRequired: true, rebootPackages: ["linux-base"], updates: { total: 4, security: 1 },
+      drives: [{
+        device: "sda", model: "Fixture Disk", passed: true, standby: false, temperatureCelsius: 33,
+        powerOnHours: 100, reallocatedSectors: 0, pendingSectors: 0, mediaErrors: null, percentageUsed: null,
+      }],
+    },
+  });
+  for (const metric of [metrics.uptime, metrics.ram, metrics.swap, metrics.load, metrics.pressure,
+    metrics.rootFilesystem, metrics.dataFilesystem]) {
     expect(metric.status).toBe("available");
     if (metric.status === "available") {
       expect(Date.parse(metric.observedAt)).toBeGreaterThanOrEqual(before);
@@ -286,9 +330,32 @@ it("serves real host measurements, fresh observations, partial failure and recov
   expect(partial.cpu).toEqual({ status: "available", value: (20 / 35) * 100, unit: "percent", observedAt: expect.any(String) });
   expect(partial.uptime).toEqual({ status: "available", value: 90066.25, unit: "seconds", observedAt: expect.any(String) });
   expect(partial.ram).toEqual({ status: "unavailable", value: null, unit: "bytes", observedAt: null });
+  expect(partial.swap).toEqual({ status: "unavailable", value: null, unit: "bytes", observedAt: null });
   expect(partial.rootFilesystem.status).toBe("available");
   expect(partial.dataFilesystem.status).toBe("available");
   expect(Date.parse(partial.uptime.observedAt!)).toBeGreaterThan(Date.parse(metrics.uptime.observedAt!));
+
+  // Missing PSI and a stale or unsafe status file fail independently and quietly.
+  await rm(join(directory, "pressure", "io"));
+  await writeFile(join(directory, "host-status", "status.json"), JSON.stringify({
+    version: 1, checkedAt: new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString(),
+    rebootRequired: false, rebootPackages: [], updates: null, drives: null,
+  }));
+  const staleResponse = await fetch(`${origin}/api/metrics`);
+  const staleText = await staleResponse.text();
+  const stale = JSON.parse(staleText) as HostMetrics;
+  expect(stale.pressure).toEqual({ status: "unavailable", value: null, unit: "percent", observedAt: null });
+  expect(stale.hostStatus).toEqual({ status: "unavailable", value: null, unit: "status", observedAt: null });
+  expect(stale.uptime.status).toBe("available");
+  await rm(join(directory, "host-status", "status.json"));
+  await symlink("/etc/passwd", join(directory, "host-status", "status.json"));
+  const linkedText = await (await fetch(`${origin}/api/metrics`)).text();
+  expect((JSON.parse(linkedText) as HostMetrics).hostStatus.status).toBe("unavailable");
+  expect(`${staleText}${linkedText}`).not.toMatch(/root:|ENOENT|ELOOP|host-status|pressure\/io/);
+  await rm(join(directory, "host-status", "status.json"));
+  const missingStatus = await (await fetch(`${origin}/api/metrics`)).json() as HostMetrics;
+  expect(missingStatus.hostStatus.status).toBe("unavailable");
+  expect(missingStatus.uptime.status).toBe("available");
 
   await rm(dataDirectory, { recursive: true, force: true });
   const missingData = await (await fetch(`${origin}/api/metrics`)).json() as HostMetrics;

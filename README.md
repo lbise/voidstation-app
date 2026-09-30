@@ -28,7 +28,7 @@ This selects the Server's private LAN IPv4 address and prints an HTTPS URL on po
 
 If multiple LAN addresses are available, select one with `VOIDSTATION_DEV_HOST`. `VOIDSTATION_DEV_PORT` changes the port and `VOIDSTATION_DEV_STATE_DIR` changes the debug state directory. For example, `VOIDSTATION_DEV_PORT=3444 npm run dev:network` uses port 3444. Only use this development server on a trusted LAN. Production has separate LAN and Tailscale HTTPS listeners and is updated only through `./deploy.sh`. This command starts the development web server, not Docker or the production Assistant worker. It must not read or write production credentials, conversations, or authentication state.
 
-On Linux, the application reads this machine's `/proc/uptime` and `/proc/meminfo`. Other operating systems show unavailable measurements unless supplied with Linux-format source files. Local readings describe the development machine, not the home Server.
+On Linux, the application reads this machine's `/proc/stat`, `/proc/uptime`, `/proc/meminfo`, `/proc/loadavg`, and `/proc/pressure/*`. Host status (reboot, updates, drive health) stays unavailable in development unless `VOIDSTATION_HOST_STATUS` names a helper-written file. Other operating systems show unavailable measurements unless supplied with Linux-format source files. Local readings describe the development machine, not the home Server.
 
 ```sh
 npm ci --prefix worker
@@ -67,6 +67,28 @@ GitHub Actions runs installation, type checking, and `npm test`. The HTTP test s
     "unit": "bytes",
     "observedAt": "2026-01-02T03:04:05.001Z"
   },
+  "swap": {
+    "status": "available",
+    "value": { "used": 536870912, "total": 2147483648 },
+    "unit": "bytes",
+    "observedAt": "2026-01-02T03:04:05.001Z"
+  },
+  "load": {
+    "status": "available",
+    "value": { "one": 0.58, "five": 1.25, "fifteen": 2, "cores": 8 },
+    "unit": "tasks",
+    "observedAt": "2026-01-02T03:04:05.001Z"
+  },
+  "pressure": {
+    "status": "available",
+    "value": {
+      "cpu": { "avg10": 1.5, "avg60": 0.75 },
+      "memory": { "avg10": 0, "avg60": 0 },
+      "io": { "avg10": 12.34, "avg60": 4.2 }
+    },
+    "unit": "percent",
+    "observedAt": "2026-01-02T03:04:05.001Z"
+  },
   "rootFilesystem": {
     "status": "available",
     "value": { "used": 400000000000, "available": 50000000000, "total": 500000000000 },
@@ -78,6 +100,23 @@ GitHub Actions runs installation, type checking, and `npm test`. The HTTP test s
     "value": { "used": 700000000000, "available": 300000000000, "total": 1000000000000 },
     "unit": "bytes",
     "observedAt": "2026-01-02T03:04:05.003Z"
+  },
+  "hostStatus": {
+    "status": "available",
+    "value": {
+      "rebootRequired": true,
+      "rebootPackages": ["linux-base"],
+      "updates": { "total": 12, "security": 3 },
+      "drives": [
+        {
+          "device": "sda", "model": "WDC WD40EFRX", "passed": true, "standby": false,
+          "temperatureCelsius": 34, "powerOnHours": 21000, "reallocatedSectors": 0,
+          "pendingSectors": 0, "mediaErrors": null, "percentageUsed": null
+        }
+      ]
+    },
+    "unit": "status",
+    "observedAt": "2026-01-02T02:50:00.000Z"
   }
 }
 ```
@@ -87,6 +126,10 @@ An unavailable measurement has `status: "unavailable"`, `value: null`, `observed
 - CPU is overall Server utilization from successive aggregate `/proc/stat` samples. The first sample establishes a baseline and is unavailable; invalid or reset counter deltas are unavailable rather than fabricated.
 - Uptime is the first value in the host's `/proc/uptime`, in seconds since boot. It is not Node.js process uptime.
 - RAM used is `MemTotal - MemAvailable`. Linux's `kB` fields are converted with 1024 bytes per unit. `MemAvailable` accounts for reclaimable memory; `MemFree` alone does not. Missing or invalid available memory is unavailable, not a fallback estimate.
+- Swap used is `SwapTotal - SwapFree` from the same `/proc/meminfo` read. A total of 0 is a valid reading: the Server has no swap.
+- Load is the 1-, 5-, and 15-minute run-queue averages from `/proc/loadavg`, with `cores` counted from the `cpuN` lines of the same `/proc/stat` read that feeds CPU. `/proc/stat` is read once per request so the CPU interval baseline is unaffected.
+- Pressure is the kernel's pressure stall information: the `some` line's `avg10` and `avg60` percentages from `/proc/pressure/cpu`, `memory`, and `io`. All three must parse or the whole measurement is unavailable.
+- Host status comes from one small JSON file written every 15 minutes by a root helper on the Server (see [Host status helper](#host-status-helper)). Its `observedAt` is the helper's check time, not the request time. A file older than three hours, dated more than five minutes in the future, larger than 64 KiB, not a regular file, or failing strict validation is unavailable. `updates` is null when pending updates could not be counted; `drives` is null when smartmontools is not installed. A drive with `standby: true` was asleep and deliberately not woken, so its readings are null.
 - Disk space is measured independently for the root and data mounted filesystems. Used space is total minus filesystem free blocks; Available is the unprivileged-user `bavail` capacity, so reserved space is not incorrectly counted as available. A data path on the same filesystem as the root path is unavailable.
 - The Dashboard labels all memory quantities in GiB, where 1 GiB is 1,073,741,824 bytes.
 - Readings refresh every five seconds during active viewing. Browser suspension can pause scheduling. Resuming a visible page triggers a refresh.
@@ -94,7 +137,7 @@ An unavailable measurement has `status: "unavailable"`, `value: null`, `observed
 
 `src/lib/host-metrics.ts` exposes `collectHostMetrics(input)` and the single `HostInput` substitution interface. Tests supply source text and observation times there. Linux file access lives in `src/lib/linux-host-input.ts`; parsing, validation, and calculations stay in the host-metrics module. `src/lib/metrics-contract.ts` is safe to import in the UI. Additional CPU and Disk space measurements can use the same per-metric contract without putting Linux collection in React.
 
-`VOIDSTATION_HOST_PROC` selects the source directory at server startup. Only the fixed filenames `stat`, `uptime`, and `meminfo` are read. `VOIDSTATION_HOST_ROOT_FS` and `VOIDSTATION_HOST_DATA_FS` select the two filesystem probe directories at startup. The adapter reads filesystem capacity and device identity from those fixed paths; it does not accept paths from HTTP requests. There is no test endpoint, fixture mode, arbitrary file query, or query-string input substitution. Do not point these variables at untrusted files or named pipes.
+`VOIDSTATION_HOST_PROC` selects the source directory at server startup. Only the fixed filenames `stat`, `uptime`, `meminfo`, `loadavg`, and `pressure/{cpu,memory,io}` are read. `VOIDSTATION_HOST_STATUS` selects the host-status file at startup (default `/host/status/status.json`); it is opened without following a final symbolic link, must be a regular file, and is read up to 64 KiB. `VOIDSTATION_HOST_ROOT_FS` and `VOIDSTATION_HOST_DATA_FS` select the two filesystem probe directories at startup. The adapter reads filesystem capacity and device identity from those fixed paths; it does not accept paths from HTTP requests. There is no test endpoint, fixture mode, arbitrary file query, or query-string input substitution. Do not point these variables at untrusted files or named pipes.
 
 ## Docker package
 
@@ -119,10 +162,32 @@ The Dashboard and worker run as UID/GID 1000. Compose drops capabilities, preven
 | `/proc/meminfo` | `/host/proc/meminfo` |
 | `${VOIDSTATION_ROOT_FILESYSTEM_PATH}` | `/host/filesystems/root` |
 | `${VOIDSTATION_DATA_FILESYSTEM_PATH}` | `/host/filesystems/data` |
+| `/proc/loadavg` | `/host/proc/loadavg` |
+| `/proc/pressure` (directory) | `/host/proc/pressure` |
+| `${VOIDSTATION_HOST_STATUS_DIRECTORY:-/var/lib/voidstation/host-status}` | `/host/status` |
 
 Set the two filesystem variables to dedicated existing empty directories on the selected root and data filesystems. There are no default probe paths. Configure the expected data filesystem UUID too; preflight verifies it and checks that the root probe belongs to `/`. The image uses `VOIDSTATION_HOST_PROC=/host/proc` plus fixed filesystem targets and never falls back to container sources if those mounts fail. Missing source files or directories make Compose fail rather than create them. Unreadable or invalid sources report unavailable. Do not work around access failures with root, privileged mode, the Docker socket, or an entire host filesystem mount.
 
+### Host status helper
+
+Reboot-required flags, pending update counts, and SMART drive health need root on the host. The Dashboard container never gets that access. Instead, a root helper runs on the Server every 15 minutes (and two minutes after boot) from a systemd timer and writes `/var/lib/voidstation/host-status/status.json` atomically (root-owned directory `0755`, file `0644`). The Dashboard mounts only that directory, read-only, and validates the file strictly. The directory is mounted rather than the file because the helper replaces the file by rename.
+
+The helper (`scripts/host/voidstation-host-status.py`, Python 3 standard library only) reads `/run/reboot-required` and `/run/reboot-required.pkgs`, runs `/usr/lib/update-notifier/apt-check` for pending update counts (it never runs `apt update`), and, when smartmontools is installed, runs `smartctl --scan-open` then `smartctl -n standby -H -A -i` per drive. `-n standby` means a sleeping HDD is reported as in standby and never spun up. Serial numbers are not recorded. Every subprocess has a timeout. The unit keeps only `CAP_SYS_RAWIO` and `CAP_SYS_ADMIN` for SMART pass-through, with no network, a read-only file system except its output directory, and a system-call filter.
+
+Install or update it on the Server before deploying this release; Compose refuses to start the Dashboard without the directory:
+
+```sh
+sudo apt install --no-install-recommends smartmontools   # optional: drive health
+sudo scripts/install-host-status.sh
+```
+
+The script is idempotent. It installs root-owned copies of the helper to `/usr/local/libexec/voidstation-host-status` and the units to `/etc/systemd/system/`, creates the directory, enables `voidstation-host-status.timer`, and runs the helper once. Re-run it after pulling helper changes. Inspect with `systemctl list-timers voidstation-host-status.timer` and `journalctl -u voidstation-host-status.service`. The directory path is fixed in the unit; `VOIDSTATION_HOST_STATUS_DIRECTORY` only needs setting if the unit is changed to match.
+
 The worker has outbound network access for its configured provider and for fetching web pages. Web search goes through the internal `searxng` service at `http://searxng:8080` (`VOIDSTATION_SEARCH_PROVIDER=searxng`). SearXNG uses a digest-pinned upstream image and runs as the image's own UID/GID 977 with a read-only root, no capabilities, no host port, the committed read-only `deploy/searxng/settings.yml`, and a private secret file named by `VOIDSTATION_SEARXNG_SECRET_FILE`. See [the runbook](docs/deployment.md#web-search-searxng). The worker has no Docker socket, host metrics mounts, TLS mount, application auth mount, development workspace, or host Pi configuration. Its token is read-only. Conversation storage and worker credential storage are separate writable UID-1000 directories. Use the worker's [independent device-code login](worker/README.md#codex-login). Never copy an interactive Pi or Codex credential into either directory.
+
+### Download queue
+
+The Dashboard shows a read-only download queue from Radarr and Sonarr through the assistant worker (`GET /media/queue`, called by the signed-in `GET /api/downloads`). It uses the same `VOIDSTATION_MEDIA_CONFIG_FILE` and API key files as the Assistant's media tools and does not need a model provider. Each service is reported independently: a service missing from the config, or whose key file is unreadable, appears as not configured without hiding the other. The worker reads at most one page of 200 records per service and caches the result for 10 seconds, so Dashboard polling adds no meaningful load on Radarr or Sonarr. The Dashboard validates the response against `src/lib/downloads-contract.ts`; `worker/src/downloads-contract.ts` is a copy that a test keeps identical.
 
 Back up `auth`, `conversations`, `worker-credentials`, and `worker-token` as one encrypted, owner-only snapshot while both containers are stopped. Restore them only while both containers remain stopped, restore UID/GID 1000 and the documented modes, then run preflight before starting either container. A restored unfinished turn stays interrupted. Do not replay it. A future action approval restored from backup must be rechecked against current service state before execution; expired approvals stay expired. Deleting an idle conversation removes its transcript and its future action and approval records. It never reverses media changes.
 

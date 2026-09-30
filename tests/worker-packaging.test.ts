@@ -16,3 +16,15 @@ it("pins both Pi packages and the restricted media runtime", async () => {
     expect(stat.isFile()).toBe(true);
   }
 });
+
+it("keeps the worker's copy of the download queue contract identical to the Dashboard's", async () => {
+  // The worker is built separately and cannot import from src/, so the contract is duplicated.
+  const body = (text: string) => text
+    .split("\n")
+    .filter((line) => !line.startsWith("//") && !line.startsWith("import "))
+    .join("\n")
+    .trim();
+  const dashboard = await readFile("src/lib/downloads-contract.ts", "utf8");
+  const worker = await readFile("worker/src/downloads-contract.ts", "utf8");
+  expect(body(worker)).toBe(body(dashboard));
+});

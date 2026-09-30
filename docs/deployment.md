@@ -40,6 +40,8 @@ Preflight checks the actual assigned interface/address and both Docker bindings.
 
 Keep the two existing empty metrics probe directories. The root probe belongs to `/`; the data probe must belong to the configured separate filesystem and match its UUID. They are read-only inputs, not storage directories.
 
+The kernel must provide pressure stall information at `/proc/pressure` (Ubuntu's default; not disabled with `psi=0`). Install the [host status helper](#host-status-helper) before the first deployment of a release that mounts it.
+
 ### Persistent state
 
 Create these only for a new deployment. An update must reuse the existing directories and token, not bootstrap another owner or replace working credentials.
@@ -112,6 +114,38 @@ docker compose --project-name voidstation-app exec assistant-worker node -e \
 Expect status 200 and a non-zero result count. A 403 means the `json` format is not enabled. No host command such as `curl http://127.0.0.1:8080` should reach it.
 
 SearXNG is one search provider behind the worker, not a fixed dependency. To use another backend later, add a provider to the worker's search code, select it with `VOIDSTATION_SEARCH_PROVIDER` on `assistant-worker`, and update `compose.yaml` and preflight together (including removing this service if it is no longer used).
+
+### Host status helper
+
+The Dashboard shows whether Ubuntu wants a reboot, how many package updates are pending, and SMART drive health. Reading those needs root on the host, so the unprivileged Dashboard container never collects them. A root helper collects them on a timer and writes one small JSON file. The Dashboard only reads that file through a read-only directory mount and validates it strictly; raw contents and errors never reach a browser.
+
+- Helper: `scripts/host/voidstation-host-status.py`, installed as `/usr/local/libexec/voidstation-host-status`. Python 3 standard library only.
+- Units: `deploy/voidstation-host-status.service` (oneshot) and `deploy/voidstation-host-status.timer` (every 15 minutes and two minutes after boot, persistent).
+- Output: `/var/lib/voidstation/host-status/status.json`, replaced atomically by rename. The directory is `root:root 0755` and the file `0644`, so UID 1000 can read but not write. Compose mounts the directory read-only at `/host/status`; mounting the file itself would pin the replaced inode.
+
+The helper reads `/run/reboot-required` and up to 20 unique package names from `/run/reboot-required.pkgs`. It counts pending updates with `/usr/lib/update-notifier/apt-check` from the existing package lists and never runs `apt update`; if apt-check is missing or fails, `updates` is null. With smartmontools installed it runs `smartctl --scan-open --json`, then `smartctl --json -n standby -H -A -i` for each device (at most 32). `-n standby` makes smartctl skip a drive that is asleep instead of spinning it up; the drive is reported with `standby: true` and null readings. Without smartctl, `drives` is null. Serial numbers are not recorded. Every subprocess has a timeout.
+
+The service runs as root because SMART pass-through ioctls need `CAP_SYS_RAWIO` (ATA) and `CAP_SYS_ADMIN` (NVMe); its capability bounding set holds only those two. It has no network (`PrivateNetwork`, `IPAddressDeny=any`), `ProtectSystem=strict` with only its output directory writable, `ProtectHome`, `PrivateTmp`, kernel and control-group protections, `NoNewPrivileges`, and a `@system-service` system-call filter. `/dev` stays visible (no `PrivateDevices`) so smartctl can open drives. As with the other host helpers, root runs an installed copy, never a file from the writable checkout.
+
+Install or update it on the Server from the reviewed checkout:
+
+```sh
+# Optional, for drive health. --no-install-recommends avoids pulling in a mail server.
+sudo apt install --no-install-recommends smartmontools
+sudo scripts/install-host-status.sh
+```
+
+The script is idempotent: it installs root-owned copies of the helper and units, creates `/var/lib/voidstation/host-status` (without changing an existing `/var/lib/voidstation`), runs `systemctl daemon-reload`, enables and starts the timer, and runs the helper once. It prints a hint if smartctl or apt-check is missing. Re-run it whenever the helper or units change. If smartmontools is installed later, run `sudo systemctl start voidstation-host-status.service` to refresh immediately.
+
+Preflight requires the directory to exist, root-owned, not writable by group or others, and readable by UID 1000; if `status.json` exists it must be a root-owned regular file readable by others. A missing file is allowed, because the Dashboard reports host status as unavailable until the first run. The Dashboard also reports it unavailable when the file is older than three hours, dated more than five minutes ahead, or invalid. The path is fixed in the unit; `VOIDSTATION_HOST_STATUS_DIRECTORY` in `.env` only needs setting if the unit's `ReadWritePaths` and `VOIDSTATION_HOST_STATUS_DIRECTORY` are changed to match. Inspect it with:
+
+```sh
+systemctl list-timers voidstation-host-status.timer
+journalctl -u voidstation-host-status.service
+cat /var/lib/voidstation/host-status/status.json
+```
+
+The file needs no backup; the next timer run recreates it.
 
 ### Certificates
 
@@ -212,7 +246,7 @@ Preflight resolves effective Compose configuration and rejects extra services, e
 
 Production updates check both existing HTTPS paths before changes, pull the digest-pinned SearXNG image, build only Dashboard and assistant-worker, inspect the built worker, and recheck configuration. They start SearXNG from the pulled image, then update the worker without forcing an unchanged image to restart, then recreate the Dashboard so changed certificate files load even when its image is unchanged. Postdeploy inspects all three containers, including the SearXNG image digest, and requires certificate-verified login responses on both paths. `ca.pem` supplies trust only for the LAN probe; Tailscale uses normal public trust. Do not use `-k`, `NODE_TLS_REJECT_UNAUTHORIZED=0`, `next start`, or permissive CORS as a workaround. A failed probe must identify the path that failed. A successful Server-local probe does not prove remote reachability.
 
-The Dashboard and worker run as UID/GID 1000; SearXNG runs as UID/GID 977. All three drop every capability and use no-new-privileges, a read-only root filesystem, and restricted tmpfs mounts. The Dashboard retains its five narrow read-only metrics mounts, writable auth bind, read-only token, and two read-only TLS mounts. The worker has only the read-only token plus separate writable conversation and credential binds. Neither has a Docker socket or development workspace. The worker has no host port, TLS keys, Dashboard auth database, or host-metrics mounts. SearXNG has only its read-only settings directory and secret file, and no host port.
+The Dashboard and worker run as UID/GID 1000; SearXNG runs as UID/GID 977. All three drop every capability and use no-new-privileges, a read-only root filesystem, and restricted tmpfs mounts. The Dashboard retains its narrow read-only metrics mounts (`/proc/stat`, `/proc/uptime`, `/proc/meminfo`, `/proc/loadavg`, the `/proc/pressure` directory, the host-status directory, and the two filesystem probes), writable auth bind, read-only token, and two read-only TLS mounts. The worker has only the read-only token plus separate writable conversation and credential binds. Neither has a Docker socket or development workspace. The worker has no host port, TLS keys, Dashboard auth database, or host-metrics mounts. SearXNG has only its read-only settings directory and secret file, and no host port.
 
 ### Rollback
 

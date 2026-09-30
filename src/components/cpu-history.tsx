@@ -224,10 +224,7 @@ export function CpuHistoryChart({
           <p>{emptyMessage}</p><p>{emptyDescription}</p>
         </div>
       )}
-      <p className="cpu-history__note">
-        {waiting && history.samples.length > 0 && "Collecting readings · "}
-        This visit · up to 5 minutes · reload clears history
-      </p>
+      {waiting && history.samples.length > 0 && <p className="cpu-history__note">Collecting readings</p>}
     </div>
   );
 }
