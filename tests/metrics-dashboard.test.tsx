@@ -1,8 +1,18 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render as renderTree, screen, within } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MetricsDashboard } from "../src/components/metrics-dashboard";
+import { ServerMetricsProvider } from "../src/components/server-metrics";
+
+function render(children: ReactElement) {
+  return renderTree(<ServerMetricsProvider>{children}</ServerMetricsProvider>);
+}
+
+function latestUpdate() {
+  return screen.getByText(/^Last update /, { selector: "time" });
+}
 import type { HostMetrics } from "../src/lib/metrics-contract";
 
 const FIRST = "2026-01-02T03:04:05.000Z";
@@ -36,6 +46,7 @@ async function advance(milliseconds = 5000) {
 
 beforeEach(() => {
   vi.useFakeTimers();
+  vi.setSystemTime(new Date(FIRST).getTime() + 1_000);
   serve(observations());
   vi.stubGlobal("fetch", (_url: string, options: RequestInit) => respond(options.signal as AbortSignal));
 });
@@ -70,7 +81,8 @@ it("distinguishes initial loading from measurements that have never succeeded, w
 
   await settle();
   expect(screen.queryAllByText("Loading")).toHaveLength(0);
-  expect(screen.getAllByText("The Server did not provide this measurement.")).toHaveLength(3);
+  expect(screen.getAllByText("The Server did not provide this measurement.")).toHaveLength(5);
+  expect(screen.queryByRole("img", { name: /CPU history/ })).toBeNull();
   expect(screen.getAllByText("No measurement")).toHaveLength(2);
   expect(screen.queryByText("0%", { selector: "dd" })).toBeNull();
   expect(screen.queryByText(/0\.0 GiB/)).toBeNull();
@@ -84,7 +96,7 @@ it("keeps every metric unavailable when the first request fails", async () => {
   await settle();
 
   expect(screen.getByRole("alert").textContent).toContain("Metrics request failed");
-  expect(screen.getAllByText("The Dashboard could not request this measurement.")).toHaveLength(3);
+  expect(screen.getAllByText("The Dashboard could not request this measurement.")).toHaveLength(5);
   expect(screen.getAllByText("No measurement")).toHaveLength(2);
   expect(screen.queryAllByRole("time")).toHaveLength(0);
   expect(screen.queryByText("0%", { selector: "dd" })).toBeNull();
@@ -94,7 +106,7 @@ it("keeps every metric unavailable when the first request fails", async () => {
 it("retains a successful metric as stale while other metrics update", async () => {
   render(<MetricsDashboard />);
   await settle();
-  const firstUpdate = screen.getByRole("time");
+  const firstUpdate = latestUpdate();
   expect(firstUpdate.getAttribute("datetime")).toBe(FIRST);
 
   serve({
@@ -106,8 +118,10 @@ it("retains a successful metric as stale while other metrics update", async () =
   const cpuCard = cardFor("CPU");
   expect(cpuCard.getAttribute("data-state")).toBe("stale");
   expect(within(cpuCard).getByText("Stale reading")).toBeTruthy();
-  expect(within(cpuCard).getByText("25%" )).toBeTruthy();
-  expect(screen.getByRole("time").getAttribute("datetime")).toBe(SECOND);
+  expect(within(cpuCard).getByText("Utilization", { selector: "dt" }).nextElementSibling?.textContent).toBe("25%");
+  expect(within(cpuCard).getByRole("time").getAttribute("datetime")).toBe(FIRST);
+  expect(latestUpdate().getAttribute("datetime")).toBe(SECOND);
+  expect(screen.queryByText("Live", { exact: true })).toBeNull();
   expect(screen.queryByRole("alert")).toBeNull();
 });
 
@@ -125,10 +139,10 @@ it("keeps a never-successful metric unavailable during a later request failure",
   const ramCard = cardFor("RAM");
   expect(ramCard.getAttribute("data-state")).toBe("unavailable");
   expect(within(ramCard).getByText("The Dashboard could not request this measurement.")).toBeTruthy();
-  const storageCard = cardFor("Storage");
+  const storageCard = cardFor("Disk space");
   expect(storageCard.getAttribute("data-state")).toBe("stale");
-  expect(within(storageCard).getAllByText("Stale reading")).toHaveLength(3);
-  expect(screen.getByRole("time").getAttribute("datetime")).toBe(FIRST);
+  expect(within(storageCard).getAllByText("Stale reading")).toHaveLength(2);
+  expect(latestUpdate().getAttribute("datetime")).toBe(FIRST);
 });
 
 it("retains every measurement and timestamp during a whole-request failure", async () => {
@@ -143,10 +157,10 @@ it("retains every measurement and timestamp during a whole-request failure", asy
     expect(card.getAttribute("data-state")).toBe("stale");
     expect(within(card).getByText("Stale reading")).toBeTruthy();
   }
-  const storageCard = cardFor("Storage");
+  const storageCard = cardFor("Disk space");
   expect(storageCard.getAttribute("data-state")).toBe("stale");
-  expect(within(storageCard).getAllByText("Stale reading")).toHaveLength(3);
-  expect(screen.getByRole("time").getAttribute("datetime")).toBe(FIRST);
+  expect(within(storageCard).getAllByText("Stale reading")).toHaveLength(2);
+  expect(latestUpdate().getAttribute("datetime")).toBe(FIRST);
 });
 
 it("exposes reading timestamps through an accessible clock control", async () => {
@@ -159,9 +173,29 @@ it("exposes reading timestamps through an accessible clock control", async () =>
 
   expect(screen.getByRole("dialog").textContent).toContain("Server readings");
   expect(screen.getByRole("dialog").textContent).toContain("1/2/2026");
+  expect(screen.getByRole("dialog").textContent).toContain("most recent observation");
+  expect(screen.getByRole("dialog").textContent).toContain("ages may differ");
 
   fireEvent.keyDown(document, { key: "Escape" });
   expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+it("offers independent observation details for every reading and visibly dates stale figures", async () => {
+  render(<MetricsDashboard />);
+  await settle();
+  expect(screen.getByText("Live", { exact: true })).toBeTruthy();
+  for (const title of ["CPU", "RAM", "Uptime", "Disk space on /", "Disk space on /data"]) {
+    expect(screen.getByRole("button", { name: `${title} update details` })).toBeTruthy();
+  }
+  serve({ ...observations(SECOND), ram: { ...unavailable, unit: "bytes" } });
+  await advance();
+  const ram = within(cardFor("RAM"));
+  expect(ram.getByRole("time").getAttribute("datetime")).toBe(FIRST);
+  expect(ram.getByText(/Retrying when visible/)).toBeTruthy();
+  fireEvent.click(ram.getByRole("button", { name: "RAM update details" }));
+  expect(screen.getByRole("dialog").textContent).toContain("Last successful reading");
+  expect(screen.getByRole("dialog").textContent).toContain("historical, not the current state");
+  expect(latestUpdate().getAttribute("datetime")).toBe(SECOND);
 });
 
 it("plots successful CPU observations and does not add stale values", async () => {
@@ -171,17 +205,19 @@ it("plots successful CPU observations and does not add stale values", async () =
   await settle();
 
   const chart = () => screen.getByRole("img", { name: /CPU history/ });
-  expect(chart().querySelector("path")?.getAttribute("d")).not.toContain("L");
+  expect(chart().querySelector(".cpu-history__line")?.getAttribute("d")).not.toContain("L");
 
   await advance();
   const second = new Date(Date.now() - 1_000).toISOString();
   serve(observations(second));
   await advance();
-  expect(chart().querySelector("path")?.getAttribute("d")).toContain("L");
+  const line = chart().querySelector(".cpu-history__line")?.getAttribute("d");
+  expect(line).toContain("L");
 
   serve({ ...observations(second), cpu: { ...unavailable, unit: "percent" } });
   await advance();
-  expect(chart().querySelector("path")?.getAttribute("d")).toContain("L");
+  const staleLine = chart().querySelector(".cpu-history__line")?.getAttribute("d") ?? "";
+  expect(staleLine.match(/[ML]/g)).toEqual(line?.match(/[ML]/g));
 });
 
 it("presents CPU and Uptime as labelled readings and retains them after a failed refresh", async () => {
@@ -214,7 +250,7 @@ it("presents CPU and Uptime as labelled readings and retains them after a failed
     uptime: { status: "available", value: 0, unit: "seconds", observedAt: THIRD },
   });
   await advance();
-  expect(within(cardFor("CPU")).getByText("0%", { selector: "dd" })).toBeTruthy();
+  expect(within(cardFor("CPU")).getByText("Utilization", { selector: "dt" }).nextElementSibling?.textContent).toBe("0%");
   expect(within(cardFor("Uptime")).getByText("0 seconds", { selector: "dd" })).toBeTruthy();
   expect(screen.queryByText("Stale reading")).toBeNull();
 });
@@ -273,7 +309,8 @@ it("does not invent capacity values for a storage mount that has never succeeded
   await settle();
 
   expect(screen.queryByRole("group", { name: "/data capacity" })).toBeNull();
-  expect(within(cardFor("Storage")).getByText("No measurement")).toBeTruthy();
+  expect(within(cardFor("Disk space")).getByText("No measurement")).toBeTruthy();
+  expect(screen.queryByText("Live", { exact: true })).toBeNull();
   expect(screen.getByRole("group", { name: "/ capacity" })).toBeTruthy();
 });
 
@@ -286,10 +323,10 @@ it("returns stale measurements to current after a later request succeeds", async
   await advance();
 
   expect(screen.queryByRole("alert")).toBeNull();
-  for (const title of ["CPU", "Uptime", "RAM", "Storage"]) {
+  for (const title of ["CPU", "Uptime", "RAM", "Disk space"]) {
     const card = cardFor(title);
     expect(card.getAttribute("data-state")).toBe("available");
     expect(within(card).queryByText("Current")).toBeNull();
   }
-  expect(screen.getByRole("time").getAttribute("datetime")).toBe(THIRD);
+  expect(latestUpdate().getAttribute("datetime")).toBe(THIRD);
 });

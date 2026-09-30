@@ -1,0 +1,158 @@
+{
+  "title": "Choose Voidstation's visual world",
+  "question": "The roll dealt Projection Booth. Keep it, take an alternate, or re-roll. Emerald and the V/ logo stay in every option.",
+  "options": [
+    {
+      "id": "assigned",
+      "label": "Projection Booth",
+      "kicker": "THE ROLL",
+      "lineage": "35mm projection booths: changeover cue marks, reel-can labels, Academy leader, the booth log",
+      "thesis": "The Server is the projector and you're the projectionist: it keeps running while you watch the lamp, and nothing changes over without your cue.",
+      "palette": ["#141312", "#2a2825", "#6b6862", "#e6e1d6", "#22c38b", "#e0a43a", "#e05a4a"],
+      "materials": ["warm booth graphite", "sprocket rhythm as the time axis", "stencilled reel-can labels", "cue-dot marks", "booth-log ruling"],
+      "viewport": "Assistant: slim booth rail (logo, lamp-status Server strip, conversations as numbered reel cans). The log fills the center: your cues as short lines, answers as full-width reading text, tool checks folded into one sprocket-ticked 'checked' line. The composer is a docked slate with the model stamped on it. Mobile: top bar with lamp, reels in a drawer, slate pinned to the thumb.",
+      "risk": "Cinema props can turn into costume. Every film motif has to do a job (time axis, approval cue, labels) or it's cut.",
+      "raised": [
+        { "from": "challenger-orienteering", "raise": "The course never edits the terrain: Assistant proposals render as their own layer, never mixed into Server readings." },
+        { "from": "challenger-darkroom", "raise": "Test strip before commit: every Server control previews exactly what will change before Approve goes live." },
+        { "from": "challenger-arcade", "raise": "Palette law: emerald = running/live, amber = cued/pending/stale, red = fault. No decoration borrows them." },
+        { "from": "challenger-deepdive", "raise": "Instrument digits: every measurement sits in a tabular numeral face on its own axis, and the words stay quiet." },
+        { "from": "challenger-cape", "raise": "Named stages: each Assistant turn moves asked → checking → answered in one fixed place, not a stack of boxes." }
+      ],
+      "wireframe": {
+        "cols": 12, "rows": 10,
+        "regions": [
+          { "label": "booth rail + lamp", "x": 0, "y": 0, "w": 2, "h": 10 },
+          { "label": "reel title · cue marks", "x": 2, "y": 0, "w": 10, "h": 1 },
+          { "label": "booth log", "x": 3, "y": 1, "w": 8, "h": 7 },
+          { "label": "slate composer", "x": 3, "y": 8, "w": 8, "h": 2, "accent": true }
+        ]
+      }
+    },
+    {
+      "id": "model-pick",
+      "label": "Braun Device Panel",
+      "kicker": "IMPECCABLE’S PICK",
+      "lineage": "Dieter Rams' Braun appliances: T3, SK4, ET66",
+      "thesis": "Voidstation as a well-made appliance: few controls, perfect engraved legends, and one green key that means go.",
+      "palette": ["#1c1d1f", "#2b2c2f", "#8a8a86", "#ecebe6", "#22c38b", "#e8a33d"],
+      "materials": ["matte anodized panel", "speaker-grille dot grid", "round keys", "engraved legends"],
+      "viewport": "Assistant on a quiet panel. The Server gauges sit in a dot-grid strip across the top. Conversation reads like a printout, and the composer is one field with a single emerald key.",
+      "risk": "Familiar: the Rams tribute is where many 'tasteful tool' redesigns land, and it can read as homage rather than your Server.",
+      "wireframe": {
+        "cols": 12, "rows": 10,
+        "regions": [
+          { "label": "gauge strip", "x": 0, "y": 0, "w": 12, "h": 1 },
+          { "label": "history", "x": 0, "y": 1, "w": 3, "h": 9 },
+          { "label": "printout", "x": 3, "y": 1, "w": 9, "h": 7 },
+          { "label": "field + green key", "x": 3, "y": 8, "w": 9, "h": 2, "accent": true }
+        ]
+      }
+    },
+    {
+      "id": "challenger-saville",
+      "label": "Factory Catalog",
+      "verdict": "competitive",
+      "lineage": "Peter Saville's Factory Records sleeves: FAC numbers and the Unknown Pleasures pulse plot",
+      "thesis": "Every conversation, reading, and control gets a catalog number, and CPU history becomes a stacked pulse plot in white hairlines.",
+      "palette": ["#0b0b0b", "#1a1a1a", "#f2f2f2", "#22c38b", "#d9482b", "#3f6fd8", "#e3c33a"],
+      "materials": ["matte black sleeve", "white hairline ridgeline", "colour-block codes", "small engraved caps"],
+      "viewport": "Black field. The CPU ridgeline owns the top of the Dashboard, and threads are indexed VS-001, VS-002… as a strict catalog.",
+      "case": "Homelab people know this cover by heart, and the ridgeline is a better CPU history. It loses on clarity because coded strips replace words you need on a phone.",
+      "risk": "If the codes aren't translated into plain labels, it becomes a puzzle at 2am when the Server is down.",
+      "hero": "https://impeccable.style/worlds/cards/brand-identity-canon-saville-catalog-sleeve-hero.webp",
+      "board": "https://impeccable.style/worlds/cards/brand-identity-canon-saville-catalog-sleeve.webp",
+      "wireframe": {
+        "cols": 12, "rows": 10,
+        "regions": [
+          { "label": "FAC index", "x": 0, "y": 0, "w": 2, "h": 10 },
+          { "label": "pulse plot", "x": 2, "y": 0, "w": 10, "h": 3, "accent": true },
+          { "label": "entry", "x": 3, "y": 3, "w": 8, "h": 5 },
+          { "label": "input", "x": 3, "y": 8, "w": 8, "h": 2 }
+        ]
+      }
+    },
+    {
+      "id": "challenger-darkroom",
+      "label": "Darkroom Safelight",
+      "verdict": "declined",
+      "lineage": "print darkroom under amber safelight",
+      "thesis": "Work moves through fixed stations, and past marked points it's irreversible.",
+      "palette": ["#1a0f08", "#c9781f", "#8f8a82", "#f1ede4"],
+      "materials": ["amber wash", "test strips", "enamel trays"],
+      "viewport": "Stations laid out in order, with a test strip before every print.",
+      "case": "Amber wash fights the emerald commitment, and darkroom work isn't the owner's world.",
+      "kept": "Test strip before commit: controls preview exact changes before Approve.",
+      "risk": "An amber monotone drowns state colour.",
+      "hero": "https://impeccable.style/worlds/cards/signals-instruments-darkroom-safelight-bay-hero.webp"
+    },
+    {
+      "id": "challenger-orienteering",
+      "label": "Orienteering Map",
+      "verdict": "declined",
+      "lineage": "ISOM orienteering maps",
+      "thesis": "Fixed terrain below, and one purple course riding above it.",
+      "palette": ["#ffffff", "#f5d23a", "#9a6a3a", "#3aa0d8", "#a0288c"],
+      "materials": ["contour texture", "control circles", "legend table"],
+      "viewport": "Server as terrain with Assistant legs drawn over it.",
+      "case": "Clever read-only metaphor, but you don't live in this map, and chat reads poorly as a course.",
+      "kept": "The course never edits the terrain: proposals stay a separate layer from readings.",
+      "risk": "Unfamiliar notation on every screen.",
+      "hero": "https://impeccable.style/worlds/cards/notation-diagram-systems-orienteering-map-hero.webp"
+    },
+    {
+      "id": "challenger-arcade",
+      "label": "CRT Arcade",
+      "verdict": "declined",
+      "lineage": "pixel-art arcade cabinets",
+      "thesis": "Fat pixels and phosphor, with palette laws for power and damage.",
+      "palette": ["#050505", "#22c38b", "#f2d04b", "#e04848", "#4a7cf0"],
+      "materials": ["scanlines", "8×8 pixel caps", "bloom"],
+      "viewport": "Server stats as a score bar over a tile playfield.",
+      "case": "Novelty over trust, and pixel type is hostile to long Assistant answers.",
+      "kept": "Palette law: state colours are reserved and never decorative.",
+      "risk": "Retro gimmick in a week.",
+      "hero": "https://impeccable.style/worlds/cards/medium-native-crt-arcade-pixel-glow-hero.webp"
+    },
+    {
+      "id": "challenger-deepdive",
+      "label": "Mesophotic Dive",
+      "verdict": "declined",
+      "lineage": "technical dive computers and depth profiles",
+      "thesis": "One vertical depth axis rules everything.",
+      "palette": ["#04121f", "#0a2a44", "#35c7d8", "#eef3f5"],
+      "materials": ["marine snow", "dive-computer digits"],
+      "viewport": "A dive profile with observations pinned at depth.",
+      "case": "Beautiful, but the ocean says nothing about a home Server or its media.",
+      "kept": "Instrument digits: measurements in tabular numerals on their own axis.",
+      "risk": "Atmosphere over task.",
+      "hero": "https://impeccable.style/worlds/cards/rivers-tides-ocean-depths-mesophotic-deep-dive-hero.webp"
+    },
+    {
+      "id": "challenger-cape",
+      "label": "Drawcord Cape",
+      "verdict": "declined",
+      "lineage": "transforming silk garments",
+      "thesis": "One pull turns a flat plane into shaped volume.",
+      "palette": ["#0c0c0c", "#c9a24a", "#4a4a4a", "#6c7480"],
+      "materials": ["matte silk", "gold cord", "channel stitching"],
+      "viewport": "A flat surface that gathers into detail on one pull.",
+      "case": "No connection to the owner's world, and clarity suffers.",
+      "kept": "Named stages: each turn moves through a few named states in one place.",
+      "risk": "Fashion costume on a server tool.",
+      "hero": "https://impeccable.style/worlds/cards/textiles-weave-drape-fashion-drawcord-transforming-cape-hero.webp"
+    }
+  ],
+  "reroll": { "registers": ["safer", "bolder"] },
+  "buildPath": { "value": "code" },
+  "canon": true,
+  "canonCard": {
+    "label": "The category standard",
+    "thesis": "A polished dark app in the Linear/Vercel mould with a ChatGPT-style Assistant, executed impeccably.",
+    "palette": ["#0a0a0a", "#171717", "#262626", "#fafafa", "#22c38b"],
+    "materials": ["clean sidebar", "soft cards", "neutral grotesk", "centered chat column"],
+    "viewport": "Sidebar with nav and history, a centered chat column, and a floating rounded composer.",
+    "risk": "Indistinguishable from every other self-hosted dashboard, by design."
+  },
+  "steer": true
+}

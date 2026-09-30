@@ -1,316 +1,89 @@
 "use client";
 
-import { AlertTriangle, Clock3, Cpu, HardDrive, MemoryStick, Radio, Unplug } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { AlertTriangle, Server, Unplug } from "lucide-react";
+import type { ReactNode } from "react";
 
-import { CpuHistoryChart, useCpuHistory } from "@/components/cpu-history";
+import { CpuHistoryChart } from "@/components/cpu-history";
 import { ReadingInfo } from "@/components/reading-info";
-
+import {
+  formatCpu,
+  formatGiB,
+  formatObservedAt,
+  formatPercentage,
+  formatUptime,
+  readingStatus,
+  useServerMetrics,
+  type MetricState,
+  type ReadingStatus,
+} from "@/components/server-metrics";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import {
-  Card,
-  CardAction,
-  CardContent,
-  CardHeader,
-  CardTitle,
+  Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle,
 } from "@/components/ui/card";
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from "@/components/ui/empty";
-import type { DiskSpace, HostMetrics, Measurement, RamUsage } from "@/lib/metrics-contract";
-
-const POLL_INTERVAL_MS = 5_000;
-const REQUEST_TIMEOUT_MS = 4_000;
-const ISO_DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
-
-type AvailableMeasurement<T, U extends string> = Extract<Measurement<T, U>, { status: "available" }>;
-type MetricState<T, U extends string> = {
-  measurement: AvailableMeasurement<T, U> | null;
-  stale: boolean;
-};
-
-type DashboardState = {
-  cpu: MetricState<number, "percent">;
-  uptime: MetricState<number, "seconds">;
-  ram: MetricState<RamUsage, "bytes">;
-  rootFilesystem: MetricState<DiskSpace, "bytes">;
-  dataFilesystem: MetricState<DiskSpace, "bytes">;
-};
-
-type ReadingStatus = "loading" | "available" | "stale" | "unavailable";
-type UnavailableCause = "metric" | "request";
-type ActiveRequest = {
-  controller: AbortController;
-  timeoutId: number;
-  timedOut: boolean;
-};
-
-const emptyMetric = <T, U extends string>(): MetricState<T, U> => ({
-  measurement: null,
-  stale: false,
-});
-
-const initialState: DashboardState = {
-  cpu: emptyMetric<number, "percent">(),
-  uptime: emptyMetric<number, "seconds">(),
-  ram: emptyMetric<RamUsage, "bytes">(),
-  rootFilesystem: emptyMetric<DiskSpace, "bytes">(),
-  dataFilesystem: emptyMetric<DiskSpace, "bytes">(),
-};
-
-function reconcileMetric<T, U extends string>(
-  previous: MetricState<T, U>,
-  next: Measurement<T, U>,
-): MetricState<T, U> {
-  if (next.status === "available") {
-    return { measurement: next, stale: false };
-  }
-
-  return previous.measurement ? { ...previous, stale: true } : emptyMetric<T, U>();
-}
-
-function retainAfterRequestFailure<T, U extends string>(
-  previous: MetricState<T, U>,
-): MetricState<T, U> {
-  return previous.measurement ? { ...previous, stale: true } : previous;
-}
-
-function readingStatus<T, U extends string>(
-  reading: MetricState<T, U>,
-  initialLoading: boolean,
-): ReadingStatus {
-  if (reading.measurement) {
-    return reading.stale ? "stale" : "available";
-  }
-
-  return initialLoading ? "loading" : "unavailable";
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object";
-}
-
-function isObservedAt(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    ISO_DATE_TIME.test(value) &&
-    Number.isFinite(Date.parse(value))
-  );
-}
-
-function isByteCount(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-
-function isUnavailableMeasurement(value: unknown, unit: "seconds" | "bytes" | "percent"): boolean {
-  return (
-    isRecord(value) &&
-    value.status === "unavailable" &&
-    value.value === null &&
-    value.unit === unit &&
-    value.observedAt === null
-  );
-}
-
-function isCpuMeasurement(value: unknown): value is HostMetrics["cpu"] {
-  if (isUnavailableMeasurement(value, "percent")) {
-    return true;
-  }
-
-  return (
-    isRecord(value) &&
-    value.status === "available" &&
-    typeof value.value === "number" &&
-    Number.isFinite(value.value) &&
-    value.value >= 0 &&
-    value.value <= 100 &&
-    value.unit === "percent" &&
-    isObservedAt(value.observedAt)
-  );
-}
-
-function isUptimeMeasurement(value: unknown): value is HostMetrics["uptime"] {
-  if (isUnavailableMeasurement(value, "seconds")) {
-    return true;
-  }
-
-  return (
-    isRecord(value) &&
-    value.status === "available" &&
-    typeof value.value === "number" &&
-    Number.isFinite(value.value) &&
-    value.value >= 0 &&
-    value.unit === "seconds" &&
-    isObservedAt(value.observedAt)
-  );
-}
-
-function isRamMeasurement(value: unknown): value is HostMetrics["ram"] {
-  return isByteMeasurement(value, true);
-}
-
-function isFilesystemMeasurement(value: unknown): value is HostMetrics["rootFilesystem"] {
-  return isByteMeasurement(value, false);
-}
-
-function isByteMeasurement(
-  value: unknown,
-  requireExactArithmetic: boolean,
-): value is HostMetrics["ram"] | HostMetrics["rootFilesystem"] {
-  if (isUnavailableMeasurement(value, "bytes")) {
-    return true;
-  }
-
-  if (
-    !isRecord(value) ||
-    value.status !== "available" ||
-    value.unit !== "bytes" ||
-    !isObservedAt(value.observedAt) ||
-    !isRecord(value.value)
-  ) {
-    return false;
-  }
-
-  const { used, available, total } = value.value;
-  return (
-    isByteCount(used) &&
-    isByteCount(available) &&
-    isByteCount(total) &&
-    total > 0 &&
-    used <= total &&
-    available <= total &&
-    (requireExactArithmetic ? used === total - available : used + available <= total)
-  );
-}
-
-function isHostMetrics(value: unknown): value is HostMetrics {
-  return (
-    isRecord(value) &&
-    isCpuMeasurement(value.cpu) &&
-    isUptimeMeasurement(value.uptime) &&
-    isRamMeasurement(value.ram) &&
-    isFilesystemMeasurement(value.rootFilesystem) &&
-    isFilesystemMeasurement(value.dataFilesystem)
-  );
-}
-
-function formatUptime(seconds: number): string {
-  if (seconds === 0) {
-    return "0 seconds";
-  }
-
-  const parts = [
-    ["day", 86_400],
-    ["hour", 3_600],
-    ["minute", 60],
-  ] as const;
-  let remainder = Math.max(0, Math.floor(seconds));
-  const formatted = parts.flatMap(([unit, duration]) => {
-    const value = Math.floor(remainder / duration);
-    remainder %= duration;
-    return value > 0 ? [`${value} ${unit}${value === 1 ? "" : "s"}`] : [];
-  });
-
-  return formatted.length > 0 ? formatted.join(" ") : `${remainder} seconds`;
-}
-
-function formatGiB(bytes: number): string {
-  const gibibytes = Math.max(0, bytes) / 1024 ** 3;
-  return `${gibibytes.toLocaleString(undefined, {
-    minimumFractionDigits: 1,
-    maximumFractionDigits: 1,
-  })} GiB`;
-}
-
-function formatPercentage(used: number, total: number): number {
-  if (total <= 0) {
-    return 0;
-  }
-
-  return Math.min(100, Math.max(0, (used / total) * 100));
-}
-
-function formatCpu(value: number): string {
-  return `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })}%`;
-}
-
-function formatObservedAt(observedAt: string): string {
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "medium",
-  }).format(new Date(observedAt));
-}
+import type { DiskSpace } from "@/lib/metrics-contract";
 
 function StatusBadge({ status }: { status: ReadingStatus }) {
-  if (status === "stale") {
-    return (
-      <Badge variant="warning">
-        <AlertTriangle data-icon="inline-start" aria-hidden="true" />
-        Stale reading
-      </Badge>
-    );
-  }
+  if (status === "available") return null;
+  return (
+    <Badge variant={status === "stale" ? "warning" : status === "loading" ? "secondary" : "outline"}>
+      {status === "stale" && <AlertTriangle data-icon="inline-start" aria-hidden="true" />}
+      {status === "unavailable" && <Unplug data-icon="inline-start" aria-hidden="true" />}
+      {status === "stale" ? "Stale reading" : status === "loading" ? "Loading" : "Unavailable"}
+    </Badge>
+  );
+}
 
-  if (status === "unavailable") {
-    return (
-      <Badge variant="outline">
-        <Unplug data-icon="inline-start" aria-hidden="true" />
-        Unavailable
-      </Badge>
-    );
-  }
-
-  if (status === "loading") {
-    return (
-      <Badge variant="secondary">
-        <Radio data-icon="inline-start" aria-hidden="true" />
-        Loading
-      </Badge>
-    );
-  }
-
-  return null;
+function Observation({
+  title, status, observedAt, detail,
+}: {
+  title: string;
+  status: ReadingStatus;
+  observedAt: string | null;
+  detail: string;
+}) {
+  return (
+    <div className="metric-observation" data-state={status}>
+      <span>
+        {status === "stale" && observedAt ? (
+          <>Retained from <time dateTime={observedAt}>{formatObservedAt(observedAt)}</time>. Retrying when visible.</>
+        ) : status === "available" ? "Current reading" : status === "loading" ? "Waiting for a reading" : "Retrying when visible"}
+      </span>
+      <ReadingInfo title={title} observedAt={observedAt} status={status} detail={detail} />
+    </div>
+  );
 }
 
 function MetricCard({
-  title,
-  icon,
-  status,
-  children,
-  readingKind,
+  title, status, children, description, kind, action, footer,
 }: {
   title: string;
-  icon: ReactNode;
   status: ReadingStatus;
   children: ReactNode;
-  readingKind?: "cpu" | "uptime" | "capacity";
+  description?: string;
+  kind: "cpu" | "ram" | "uptime" | "disk";
+  action?: ReactNode;
+  footer?: ReactNode;
 }) {
   return (
-    <Card className="metric-card" data-reading={readingKind} data-state={status}>
+    <Card className="metric-card" data-reading={kind} data-state={status}>
       <CardHeader>
-        <div className="metric-card__title-row">
-          {icon}
-          <CardTitle><h2>{title}</h2></CardTitle>
-        </div>
-        <CardAction>
-          <StatusBadge status={status} />
-        </CardAction>
+        <CardTitle><h2>{title}</h2></CardTitle>
+        {description && <CardDescription>{description}</CardDescription>}
+        <CardAction>{action ?? <StatusBadge status={status} />}</CardAction>
       </CardHeader>
       <CardContent className="metric-card__content">{children}</CardContent>
+      {footer && <CardFooter>{footer}</CardFooter>}
     </Card>
   );
 }
 
 function ScalarReading({ label, value }: { label: string; value: string }) {
   return (
-    <dl className="reading-row scalar-reading">
+    <dl className="scalar-reading">
       <dt>{label}</dt>
       <dd aria-live="polite" aria-atomic="true">{value}</dd>
     </dl>
@@ -319,7 +92,7 @@ function ScalarReading({ label, value }: { label: string; value: string }) {
 
 function LoadingReading({ label }: { label: string }) {
   return (
-    <div className="metric-loading" role="status" aria-live="polite">
+    <div className="metric-loading" role="status">
       <Skeleton className="metric-skeleton metric-skeleton--value" />
       <Skeleton className="metric-skeleton metric-skeleton--line" />
       <p>Loading {label} reading…</p>
@@ -327,384 +100,183 @@ function LoadingReading({ label }: { label: string }) {
   );
 }
 
-function UnavailableReading({ cause }: { cause: UnavailableCause }) {
-  const message =
-    cause === "request"
-      ? "The Dashboard could not request this measurement."
-      : "The Server did not provide this measurement.";
-
+function UnavailableReading({ requestFailure, mount = false }: { requestFailure: boolean; mount?: boolean }) {
   return (
     <Empty className="metric-empty">
-      <EmptyMedia variant="icon">
-        <Unplug aria-hidden="true" />
-      </EmptyMedia>
       <EmptyHeader>
-        <EmptyTitle>Unavailable</EmptyTitle>
-        <EmptyDescription>{message}</EmptyDescription>
+        <EmptyTitle>{mount ? "No measurement" : "Unavailable"}</EmptyTitle>
+        <EmptyDescription>
+          {requestFailure ? "The Dashboard could not request this measurement." : "The Server did not provide this measurement."}
+        </EmptyDescription>
       </EmptyHeader>
     </Empty>
   );
 }
 
-function CapacityReading({
-  label,
-  value,
-  stale,
-}: {
-  label: string;
-  value: DiskSpace;
-  stale: boolean;
-}) {
+function CapacityReading({ label, value, stale }: { label: string; value: DiskSpace; stale: boolean }) {
   const percent = formatPercentage(value.used, value.total);
-  const percentage = `${percent.toLocaleString(undefined, { maximumFractionDigits: 1 })}%`;
-
+  const percentage = formatCpu(percent);
   return (
     <div className="capacity-reading" role="group" aria-label={`${label} capacity`} data-stale={stale}>
       <dl className="capacity-used">
-        <div className="reading-row">
-          <dt>Used</dt>
-          <dd><span>{formatGiB(value.used)}</span><span className="capacity-percentage">{percentage}</span></dd>
-        </div>
+        <dt>Used</dt>
+        <dd><span>{formatGiB(value.used)}</span><span className="capacity-percentage">{percentage}</span></dd>
       </dl>
       <Progress
         className="capacity-progress"
         value={percent}
         aria-label={`${label} usage${stale ? ", stale reading" : ""}`}
-        aria-valuetext={`${formatGiB(value.used)} of ${formatGiB(value.total)}, ${percentage}`}
+        aria-valuetext={`${formatGiB(value.used)} of ${formatGiB(value.total)}, ${percentage}${stale ? ", historical measurement" : ""}`}
       />
       <dl className="capacity-details">
-        <div className="reading-row">
-          <dt>Total capacity</dt>
-          <dd>{formatGiB(value.total)}</dd>
-        </div>
-        <div className="reading-row">
-          <dt>Available</dt>
-          <dd>{formatGiB(value.available)}</dd>
-        </div>
+        <div><dt>Total capacity</dt><dd>{formatGiB(value.total)}</dd></div>
+        <div><dt>Available</dt><dd>{formatGiB(value.available)}</dd></div>
       </dl>
     </div>
   );
 }
 
-function storageStatus(
-  root: MetricState<DiskSpace, "bytes">,
-  data: MetricState<DiskSpace, "bytes">,
-  initialLoading: boolean,
-): ReadingStatus {
-  if (!root.measurement && !data.measurement) return initialLoading ? "loading" : "unavailable";
-  if (root.stale || data.stale) return "stale";
-  return "available";
-}
-
-function StorageItem({
-  mount,
-  status,
-  measurement,
-}: {
+function StorageItem({ mount, reading, initialLoading, requestFailure }: {
   mount: string;
-  status: ReadingStatus;
-  measurement: AvailableMeasurement<DiskSpace, "bytes"> | null;
+  reading: MetricState<DiskSpace, "bytes">;
+  initialLoading: boolean;
+  requestFailure: boolean;
 }) {
+  const status = readingStatus(reading, initialLoading);
   return (
-    <div className="storage-item" data-state={status}>
+    <section className="storage-item" data-state={status} aria-label={`Disk space on ${mount}`}>
       <header className="storage-item__header">
         <h3>{mount}</h3>
         <StatusBadge status={status} />
       </header>
-      {status === "loading" ? (
-        <Skeleton className="storage-item__skeleton" />
-      ) : measurement ? (
-        <CapacityReading label={mount} value={measurement.value} stale={status === "stale"} />
-      ) : (
-        <p className="storage-item__empty">No measurement</p>
-      )}
-    </div>
-  );
-}
-
-function StorageReading({
-  root,
-  data,
-  initialLoading,
-}: {
-  root: MetricState<DiskSpace, "bytes">;
-  data: MetricState<DiskSpace, "bytes">;
-  initialLoading: boolean;
-}) {
-  return (
-    <MetricCard
-      title="Storage"
-      icon={<HardDrive className="metric-card__icon" aria-hidden="true" />}
-      status={storageStatus(root, data, initialLoading)}
-      readingKind="capacity"
-    >
-      <div className="storage-list">
-        <StorageItem
-          mount="/"
-          status={readingStatus(root, initialLoading)}
-          measurement={root.measurement}
-        />
-        <StorageItem
-          mount="/data"
-          status={readingStatus(data, initialLoading)}
-          measurement={data.measurement}
-        />
-      </div>
-    </MetricCard>
+      {status === "loading" ? <LoadingReading label={mount} /> : reading.measurement ? (
+        <CapacityReading label={mount} value={reading.measurement.value} stale={reading.stale} />
+      ) : <UnavailableReading requestFailure={requestFailure} mount />}
+      <Observation
+        title={`Disk space on ${mount}`}
+        observedAt={reading.measurement?.observedAt ?? null}
+        status={status}
+        detail="Capacity, used space and available space for this mounted filesystem. A retained reading is historical, not the current state."
+      />
+    </section>
   );
 }
 
 export function MetricsDashboard() {
-  const [metrics, setMetrics] = useState<DashboardState>(initialState);
-  const [initialLoading, setInitialLoading] = useState(true);
-  const [requestFailure, setRequestFailure] = useState(false);
-
-  useEffect(() => {
-    let disposed = false;
-    let intervalId: number | null = null;
-    let inFlight = false;
-    let activeRequest: ActiveRequest | null = null;
-    let refreshPending = false;
-
-    const refresh = async () => {
-      if (inFlight || disposed || document.visibilityState !== "visible") {
-        return;
-      }
-
-      inFlight = true;
-      const controller = new AbortController();
-      const request: ActiveRequest = {
-        controller,
-        timeoutId: window.setTimeout(() => {
-          request.timedOut = true;
-          controller.abort();
-        }, REQUEST_TIMEOUT_MS),
-        timedOut: false,
-      };
-      activeRequest = request;
-
-      try {
-        const response = await fetch("/api/metrics", {
-          cache: "no-store",
-          headers: { "Cache-Control": "no-store" },
-          signal: controller.signal,
-        });
-        if (response.status === 401 && !disposed) {
-          setMetrics(initialState);
-          window.location.replace("/login");
-          return;
-        }
-        if (!response.ok) {
-          throw new Error(`Metrics request failed with ${response.status}`);
-        }
-
-        const payload: unknown = await response.json();
-        if (!isHostMetrics(payload)) {
-          throw new Error("Metrics response did not match the expected contract");
-        }
-
-        if (!disposed) {
-          setMetrics((previous) => ({
-            cpu: reconcileMetric(previous.cpu, payload.cpu),
-            uptime: reconcileMetric(previous.uptime, payload.uptime),
-            ram: reconcileMetric(previous.ram, payload.ram),
-            rootFilesystem: reconcileMetric(previous.rootFilesystem, payload.rootFilesystem),
-            dataFilesystem: reconcileMetric(previous.dataFilesystem, payload.dataFilesystem),
-          }));
-          setInitialLoading(false);
-          setRequestFailure(false);
-        }
-      } catch {
-        const abortedWithoutTimeout = controller.signal.aborted && !request.timedOut;
-        if (!disposed && !abortedWithoutTimeout) {
-          setMetrics((previous) => ({
-            cpu: retainAfterRequestFailure(previous.cpu),
-            uptime: retainAfterRequestFailure(previous.uptime),
-            ram: retainAfterRequestFailure(previous.ram),
-            rootFilesystem: retainAfterRequestFailure(previous.rootFilesystem),
-            dataFilesystem: retainAfterRequestFailure(previous.dataFilesystem),
-          }));
-          setInitialLoading(false);
-          setRequestFailure(true);
-        }
-      } finally {
-        window.clearTimeout(request.timeoutId);
-        if (activeRequest === request) {
-          activeRequest = null;
-          inFlight = false;
-          if (refreshPending && !disposed && document.visibilityState === "visible") {
-            refreshPending = false;
-            void refresh();
-          }
-        }
-      }
-    };
-
-    const requestImmediateRefresh = () => {
-      if (inFlight) {
-        refreshPending = true;
-        return;
-      }
-
-      void refresh();
-    };
-
-    const stopPolling = () => {
-      refreshPending = false;
-      if (intervalId !== null) {
-        window.clearInterval(intervalId);
-        intervalId = null;
-      }
-      activeRequest?.controller.abort();
-    };
-
-    const startPolling = () => {
-      if (document.visibilityState !== "visible") {
-        return;
-      }
-
-      requestImmediateRefresh();
-      if (intervalId === null) {
-        intervalId = window.setInterval(() => void refresh(), POLL_INTERVAL_MS);
-      }
-    };
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        startPolling();
-      } else {
-        stopPolling();
-      }
-    };
-
-    startPolling();
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-
-    return () => {
-      disposed = true;
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      stopPolling();
-    };
-  }, []);
-
+  const { metrics, initialLoading, requestFailure, cpuHistory, lastUpdated } = useServerMetrics();
+  const statuses = Object.values(metrics).map((reading) => readingStatus(reading, initialLoading));
+  const allCurrent = statuses.every((status) => status === "available");
+  const anyStale = statuses.includes("stale");
+  const updateStatus: ReadingStatus = initialLoading ? "loading" : allCurrent ? "available" : anyStale ? "stale" : "unavailable";
   const cpuStatus = readingStatus(metrics.cpu, initialLoading);
-  const uptimeStatus = readingStatus(metrics.uptime, initialLoading);
   const ramStatus = readingStatus(metrics.ram, initialLoading);
+  const uptimeStatus = readingStatus(metrics.uptime, initialLoading);
   const cpu = metrics.cpu.measurement;
-  const uptime = metrics.uptime.measurement;
   const ram = metrics.ram.measurement;
-  const unavailableCause: UnavailableCause = requestFailure ? "request" : "metric";
-  const cpuHistory = useCpuHistory({
-    status: cpuStatus,
-    value: cpu?.value ?? null,
-    observedAt: cpu?.observedAt ?? null,
-  });
-  const lastUpdated = [
-    metrics.cpu.measurement,
-    metrics.uptime.measurement,
-    metrics.ram.measurement,
-    metrics.rootFilesystem.measurement,
-    metrics.dataFilesystem.measurement,
-  ].reduce<string | null>((latest, measurement) => {
-    if (!measurement || !latest) return measurement?.observedAt ?? latest;
-    return Date.parse(measurement.observedAt) > Date.parse(latest)
-      ? measurement.observedAt
-      : latest;
-  }, null);
-  const updateStatus: ReadingStatus = initialLoading
-    ? "loading"
-    : lastUpdated
-      ? requestFailure
-        ? "stale"
-        : "available"
-      : "unavailable";
+  const uptime = metrics.uptime.measurement;
+  const diskStatuses = [metrics.rootFilesystem, metrics.dataFilesystem].map((reading) => readingStatus(reading, initialLoading));
+  const diskStatus: ReadingStatus = diskStatuses.includes("stale") ? "stale"
+    : diskStatuses.includes("loading") ? "loading"
+    : diskStatuses.includes("unavailable") ? "unavailable" : "available";
+  const samples = cpuHistory.samples.map((sample) => sample.percent);
+  const summary = samples.length ? {
+    min: Math.min(...samples),
+    average: samples.reduce((sum, sample) => sum + sample, 0) / samples.length,
+    peak: Math.max(...samples),
+  } : null;
 
   return (
     <section className="metrics-section" aria-label="Server measurements">
-      <div className="metrics-toolbar">
-        <span className="metrics-toolbar__label">
-          {lastUpdated ? (
-            <time dateTime={lastUpdated}>Last update {formatObservedAt(lastUpdated)}</time>
-          ) : (
-            "No update received"
-          )}
-        </span>
-        <ReadingInfo
-          title="Server readings"
-          observedAt={lastUpdated}
-          status={updateStatus}
-          detail="The displayed readings share the latest successful observation time."
-        />
-      </div>
+      <header className="metrics-heading">
+        <div className="metrics-heading__identity">
+          <span className="metrics-heading__icon"><Server aria-hidden="true" /></span>
+          <div>
+            <h1>Dashboard</h1>
+            <div className="metrics-heading__subtitle">
+              <span>Home Server</span>
+              <Badge variant={allCurrent ? "secondary" : anyStale ? "warning" : "outline"} data-live={allCurrent}>
+                {initialLoading ? "Loading" : allCurrent ? "Live" : anyStale ? "Stale readings" : statuses.includes("available") ? "Some readings unavailable" : "Readings unavailable"}
+              </Badge>
+            </div>
+          </div>
+        </div>
+        <div className="metrics-toolbar">
+          <div className="metrics-toolbar__text">
+            {lastUpdated ? <time dateTime={lastUpdated}>Last update {formatObservedAt(lastUpdated)}</time> : <span>No update received</span>}
+            <span>Refreshes every 5 s while visible</span>
+          </div>
+          <ReadingInfo
+            title="Server readings"
+            observedAt={lastUpdated}
+            status={updateStatus}
+            detail="The most recent observation among the displayed readings. Individual observation times and ages may differ; check each reading for its own time and status."
+          />
+        </div>
+      </header>
       {requestFailure && (
         <Alert variant="destructive" className="metrics-request-alert">
           <AlertTriangle aria-hidden="true" />
           <AlertTitle>Metrics request failed</AlertTitle>
-          <AlertDescription>
-            The Dashboard could not refresh Server readings. Retained measurements are marked stale.
-          </AlertDescription>
+          <AlertDescription>Retained measurements are stale. Refreshing will retry while this tab is visible.</AlertDescription>
         </Alert>
       )}
       <div className="metrics-grid">
         <MetricCard
-          title="Uptime"
-          icon={<Clock3 className="metric-card__icon" aria-hidden="true" />}
-          status={uptimeStatus}
-          readingKind="uptime"
-        >
-          {uptimeStatus === "loading" ? (
-            <LoadingReading label="uptime" />
-          ) : uptime ? (
-            <ScalarReading label="Since boot" value={formatUptime(uptime.value)} />
-          ) : (
-            <UnavailableReading cause={unavailableCause} />
-          )}
-        </MetricCard>
-        <MetricCard
           title="CPU"
-          icon={<Cpu className="metric-card__icon" aria-hidden="true" />}
+          kind="cpu"
           status={cpuStatus}
-          readingKind="cpu"
+          description="Utilization · samples from this visit"
+          action={(
+            <div className="cpu-current">
+              {cpu && <ScalarReading label="Utilization" value={formatCpu(cpu.value)} />}
+              <StatusBadge status={cpuStatus} />
+            </div>
+          )}
+          footer={(
+            <div className="cpu-summary">
+              {summary && <dl>
+                <div><dt>Min</dt><dd>{formatCpu(summary.min)}</dd></div>
+                <div><dt>Average</dt><dd>{formatCpu(summary.average)}</dd></div>
+                <div><dt>Peak</dt><dd>{formatCpu(summary.peak)}</dd></div>
+              </dl>}
+              <Observation
+                title="CPU"
+                observedAt={cpu?.observedAt ?? null}
+                status={cpuStatus}
+                detail="CPU utilization at this observation time. The chart contains only successful samples from this visit, up to five minutes. Gaps mark missing observations. Reloading clears history."
+              />
+            </div>
+          )}
         >
           {cpuStatus === "loading" && <LoadingReading label="CPU" />}
-          {cpu && (
-            <ScalarReading label="Utilization" value={formatCpu(cpu.value)} />
-          )}
-          {!cpu && cpuStatus !== "loading" && (
-            <UnavailableReading cause={unavailableCause} />
-          )}
-          <CpuHistoryChart
-            history={cpuHistory}
-            emptyMessage={cpuStatus === "unavailable" ? "History unavailable" : undefined}
-            emptyDescription={
-              cpuStatus === "unavailable"
-                ? "A graph will appear after a successful CPU observation."
-                : undefined
-            }
-          />
+          {!cpu && cpuStatus !== "loading" && <UnavailableReading requestFailure={requestFailure} />}
+          {(cpu || cpuHistory.samples.length > 0) && <CpuHistoryChart history={cpuHistory} />}
         </MetricCard>
-
-        <MetricCard
-          title="RAM"
-          icon={<MemoryStick className="metric-card__icon" aria-hidden="true" />}
-          status={ramStatus}
-          readingKind="capacity"
-        >
-          {ramStatus === "loading" ? (
-            <LoadingReading label="RAM" />
-          ) : ram ? (
-            <CapacityReading label="RAM" value={ram.value} stale={ramStatus === "stale"} />
-          ) : (
-            <UnavailableReading cause={unavailableCause} />
-          )}
-        </MetricCard>
-
-        <StorageReading
-          root={metrics.rootFilesystem}
-          data={metrics.dataFilesystem}
-          initialLoading={initialLoading}
-        />
+        <div className="metrics-side">
+          <MetricCard title="RAM" kind="ram" status={ramStatus} footer={(
+            <Observation title="RAM" observedAt={ram?.observedAt ?? null} status={ramStatus}
+              detail="Used, available and total Server RAM at this observation time. A retained reading is historical, not the current state." />
+          )}>
+            {ramStatus === "loading" ? <LoadingReading label="RAM" /> : ram ? (
+              <CapacityReading label="RAM" value={ram.value} stale={metrics.ram.stale} />
+            ) : <UnavailableReading requestFailure={requestFailure} />}
+          </MetricCard>
+          <MetricCard title="Uptime" kind="uptime" status={uptimeStatus} footer={(
+            <Observation title="Uptime" observedAt={uptime?.observedAt ?? null} status={uptimeStatus}
+              detail="Time since the Server booted, not since Voidstation started. A retained reading does not continue counting after refreshing fails." />
+          )}>
+            {uptimeStatus === "loading" ? <LoadingReading label="uptime" /> : uptime ? (
+              <ScalarReading label="Since boot" value={formatUptime(uptime.value)} />
+            ) : <UnavailableReading requestFailure={requestFailure} />}
+          </MetricCard>
+        </div>
       </div>
+      <MetricCard title="Disk space" kind="disk" status={diskStatus} description="Mounted filesystems" action={<span />}>
+        <div className="storage-list">
+          <StorageItem mount="/" reading={metrics.rootFilesystem} initialLoading={initialLoading} requestFailure={requestFailure} />
+          <StorageItem mount="/data" reading={metrics.dataFilesystem} initialLoading={initialLoading} requestFailure={requestFailure} />
+        </div>
+      </MetricCard>
     </section>
   );
 }

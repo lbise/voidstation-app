@@ -7,7 +7,7 @@ const MAX_SAMPLES = 120;
 const MAX_CONTINUOUS_GAP_MS = 15 * 1_000;
 const CHART_LEFT = 38;
 const CHART_TOP = 12;
-const CHART_BOTTOM = 126;
+const CHART_BOTTOM = 220;
 
 type CpuReading = Readonly<{
   status: "loading" | "available" | "stale" | "unavailable";
@@ -58,17 +58,29 @@ function chartY(percent: number) {
   return CHART_BOTTOM - (percent / 100) * (CHART_BOTTOM - CHART_TOP);
 }
 
-function chartPath(samples: readonly CpuHistorySample[], history: CpuHistory, width: number) {
-  return samples.reduce((path, sample, index) => {
+// Both the line and its fill use these segments, so neither crosses a gap.
+function chartSegments(samples: readonly CpuHistorySample[]) {
+  const segments: CpuHistorySample[][] = [];
+  samples.forEach((sample, index) => {
     const previous = samples[index - 1];
-    const command =
-      !previous ||
-      sample.breakBefore ||
-      sample.timestamp - previous.timestamp > MAX_CONTINUOUS_GAP_MS
-        ? "M"
-        : "L";
-    return `${path}${command}${chartX(sample.timestamp, history, width).toFixed(2)} ${chartY(sample.percent).toFixed(2)} `;
-  }, "");
+    if (!previous || sample.breakBefore || sample.timestamp - previous.timestamp > MAX_CONTINUOUS_GAP_MS) {
+      segments.push([]);
+    }
+    segments[segments.length - 1].push(sample);
+  });
+  return segments;
+}
+
+function chartPath(samples: readonly CpuHistorySample[], history: CpuHistory, width: number) {
+  return samples.map((sample, index) =>
+    `${index ? "L" : "M"}${chartX(sample.timestamp, history, width).toFixed(2)} ${chartY(sample.percent).toFixed(2)}`,
+  ).join(" ");
+}
+
+function areaPath(samples: readonly CpuHistorySample[], history: CpuHistory, width: number) {
+  const first = samples[0];
+  const last = samples[samples.length - 1];
+  return `${chartPath(samples, history, width)} L${chartX(last.timestamp, history, width).toFixed(2)} ${CHART_BOTTOM} L${chartX(first.timestamp, history, width).toFixed(2)} ${CHART_BOTTOM} Z`;
 }
 
 export function useCpuHistory(reading: CpuReading): CpuHistory {
@@ -140,6 +152,7 @@ export function CpuHistoryChart({
 }) {
   const titleId = useId();
   const descriptionId = useId();
+  const gradientId = useId();
   const container = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(320);
   useEffect(() => {
@@ -154,15 +167,20 @@ export function CpuHistoryChart({
   const chartHistory = history.samples.length
     ? { ...history, windowStart: Math.max(history.windowStart, history.samples[0].timestamp) }
     : history;
-  const path = chartPath(history.samples, chartHistory, width);
+  const segments = chartSegments(history.samples);
+  const path = segments.map((segment) => chartPath(segment, chartHistory, width)).join(" ");
   const waiting = history.samples.length < 2;
   const right = width - 8;
+  const startTime = history.samples[0]?.observedAt;
+  const clock = (timestamp: number) => new Date(timestamp).toLocaleTimeString(undefined, {
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
 
   return (
-    <div className="cpu-history" ref={container}>
-      <svg
+    <div className="cpu-history" ref={container} data-waiting={waiting} data-empty={!history.samples.length}>
+      {history.samples.length > 0 ? <svg
         className="cpu-history__chart"
-        viewBox={`0 0 ${width} 180`}
+        viewBox={`0 0 ${width} 260`}
         preserveAspectRatio="none"
         role="img"
         aria-label="CPU history"
@@ -170,10 +188,14 @@ export function CpuHistoryChart({
       >
         <title id={titleId}>CPU history</title>
         <desc id={descriptionId}>
-          {waiting
-            ? emptyDescription
-            : `CPU usage over the five minutes ending at ${new Date(history.windowEnd).toISOString()}.`}
+          {`${history.samples.length} successful CPU ${history.samples.length === 1 ? "sample" : "samples"} collected this visit, from ${startTime} to ${new Date(history.windowEnd).toISOString()}. Scale 0 to 100 percent. Gaps mark missing observations; retained stale values are not added.`}
         </desc>
+        <defs>
+          <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+            <stop className="cpu-history__gradient-start" offset="0" />
+            <stop className="cpu-history__gradient-end" offset="1" />
+          </linearGradient>
+        </defs>
         <line className="cpu-history__guide" x1={CHART_LEFT} x2={right} y1={CHART_TOP} y2={CHART_TOP} />
         <line
           className="cpu-history__guide"
@@ -186,21 +208,26 @@ export function CpuHistoryChart({
         <text className="cpu-history__axis-label" x={0} y={CHART_TOP + 4}>100%</text>
         <text className="cpu-history__axis-label" x={8} y={(CHART_TOP + CHART_BOTTOM) / 2 + 4}>50%</text>
         <text className="cpu-history__axis-label" x={16} y={CHART_BOTTOM + 4}>0%</text>
-        <text className="cpu-history__axis-label" x={CHART_LEFT} y={150}>Start</text>
-        <text className="cpu-history__axis-label" x={right} y={150} textAnchor="end">Now</text>
+        <text className="cpu-history__axis-label" x={CHART_LEFT} y={246}>{clock(chartHistory.windowStart)}</text>
+        <text className="cpu-history__axis-label" x={right} y={246} textAnchor="end">Now</text>
+        {segments.filter((segment) => segment.length > 1).map((segment) => (
+          <path key={segment[0].timestamp} className="cpu-history__area"
+            d={areaPath(segment, chartHistory, width)} fill={`url(#${gradientId})`} />
+        ))}
         {path && <path className="cpu-history__line" d={path} />}
-        {waiting && (
-          <text
-            className="cpu-history__waiting"
-            x={(CHART_LEFT + right) / 2}
-            y={(CHART_TOP + CHART_BOTTOM) / 2 - 12}
-            textAnchor="middle"
-          >
-            {emptyMessage}
-          </text>
-        )}
-      </svg>
-      <p className="cpu-history__note">This visit · reload clears history</p>
+        {segments.filter((segment) => segment.length === 1).map(([sample]) => (
+          <circle key={sample.timestamp} className="cpu-history__sample"
+            cx={chartX(sample.timestamp, chartHistory, width)} cy={chartY(sample.percent)} r={2.5} />
+        ))}
+      </svg> : (
+        <div className="cpu-history__empty" role="status">
+          <p>{emptyMessage}</p><p>{emptyDescription}</p>
+        </div>
+      )}
+      <p className="cpu-history__note">
+        {waiting && history.samples.length > 0 && "Collecting readings · "}
+        This visit · up to 5 minutes · reload clears history
+      </p>
     </div>
   );
 }

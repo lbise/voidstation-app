@@ -1,0 +1,160 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-30T11:40:00Z",
+  "title": "Design System: Voidstation",
+  "extensions": {
+    "colorMeta": {
+      "primary": { "role": "primary", "displayName": "Voidstation Emerald", "canonical": "oklch(73% 0.16 160)", "tonalRamp": ["oklch(20% 0.05 160)", "oklch(30% 0.08 160)", "oklch(42% 0.11 160)", "oklch(55% 0.14 160)", "oklch(65% 0.16 160)", "oklch(73% 0.16 160)", "oklch(84% 0.1 160)", "oklch(94% 0.04 160)"] },
+      "primary-ink": { "role": "primary", "displayName": "Emerald Ink", "canonical": "#03150d" },
+      "paper": { "role": "neutral", "displayName": "Near-black Ground", "canonical": "#0a0a0a", "tonalRamp": ["#0a0a0a", "#111111", "#1b1b1b", "#262626", "#444444", "#737373", "#a1a1a1", "#fafafa"] },
+      "surface": { "role": "neutral", "displayName": "Charcoal Panel", "canonical": "#111111" },
+      "surface-raised": { "role": "neutral", "displayName": "Raised Charcoal", "canonical": "#1b1b1b" },
+      "rule": { "role": "neutral", "displayName": "Panel Rule", "canonical": "#262626" },
+      "rule-soft": { "role": "neutral", "displayName": "Chrome Rule", "canonical": "#1c1c1c" },
+      "rule-strong": { "role": "neutral", "displayName": "Field Rule", "canonical": "#444444" },
+      "ink": { "role": "neutral", "displayName": "Reading Ink", "canonical": "#fafafa" },
+      "ink-muted": { "role": "neutral", "displayName": "Muted Ink", "canonical": "#a1a1a1" },
+      "selected": { "role": "neutral", "displayName": "Current Tab", "canonical": "#202020" },
+      "scrollbar": { "role": "neutral", "displayName": "Scrollbar Thumb", "canonical": "#333333" },
+      "warning": { "role": "tertiary", "displayName": "Stale Amber", "canonical": "#fbc56a" },
+      "destructive": { "role": "tertiary", "displayName": "Failure Red", "canonical": "#f87171" }
+    },
+    "typographyMeta": {
+      "logo-word": { "displayName": "Logo wordmark", "purpose": "The lowercase voidstation. wordmark only." },
+      "logo-mark": { "displayName": "Logo mark", "purpose": "The V/ mark and the small Assistant avatar only." },
+      "title": { "displayName": "Page title", "purpose": "Dashboard heading." },
+      "conversation-title": { "displayName": "Conversation title", "purpose": "Desktop conversation row; truncates." },
+      "body": { "displayName": "Body", "purpose": "UI baseline." },
+      "reading": { "displayName": "Reading", "purpose": "Assistant answers, capped at 72ch." },
+      "mobile-input": { "displayName": "Mobile input", "purpose": "Phone composer and settings fields; 16px prevents zoom." },
+      "button": { "displayName": "Button", "purpose": "Button labels." },
+      "navigation": { "displayName": "Navigation", "purpose": "Header workspace selector." },
+      "label": { "displayName": "Label", "purpose": "Field labels, badges, supporting text." },
+      "caption": { "displayName": "Caption", "purpose": "Observation notes and chart captions." },
+      "instrument": { "displayName": "Instrument figure", "purpose": "Secondary scalar readings." },
+      "capacity": { "displayName": "Capacity figure", "purpose": "RAM and Disk space used amounts." },
+      "cpu-current": { "displayName": "Current CPU", "purpose": "Largest figure on the Dashboard." },
+      "code": { "displayName": "Code", "purpose": "Tool parameters, results, Markdown code." }
+    },
+    "shadows": [
+      { "name": "panel", "value": "inset 0 1px 0 rgb(255 255 255 / 0.035), 0 2px 6px rgb(0 0 0 / 0.35), 0 12px 30px -12px rgb(0 0 0 / 0.65)", "purpose": "Login card and shared panel lift." },
+      { "name": "metric-card", "value": "0 1px 2px rgb(0 0 0 / 35%), 0 8px 24px -14px rgb(0 0 0 / 50%)", "purpose": "Dashboard cards." },
+      { "name": "composer", "value": "0 2px 6px rgb(0 0 0 / 30%), 0 18px 40px -16px rgb(0 0 0 / 70%)", "purpose": "Docked Assistant composer." },
+      { "name": "dialog", "value": "0 8px 24px rgb(0 0 0 / 40%), 0 24px 60px -16px rgb(0 0 0 / 70%)", "purpose": "Settings dialog." },
+      { "name": "popover", "value": "0 6px 16px rgb(0 0 0 / 40%), 0 18px 40px -16px rgb(0 0 0 / 70%)", "purpose": "Reading-info and account popovers." },
+      { "name": "drawer", "value": "16px 0 48px -16px rgb(0 0 0 / 70%)", "purpose": "Phone history drawer edge." }
+    ],
+    "motion": [
+      { "name": "ease-out", "value": "cubic-bezier(0.16, 1, 0.3, 1)", "purpose": "Default state changes, disclosure chevron, drawer entrance." },
+      { "name": "dur-micro", "value": "120ms", "purpose": "Hover and tab state changes." },
+      { "name": "disclosure", "value": "180ms", "purpose": "Tool summary chevron and composer border." },
+      { "name": "drawer-in", "value": "200ms", "purpose": "History drawer slide in." },
+      { "name": "drawer-out", "value": "150ms ease-out", "purpose": "History drawer slide out." }
+    ],
+    "breakpoints": [
+      { "name": "phone", "value": "859px", "purpose": "Drawer history, bottom tabs, compact header readings." },
+      { "name": "dashboard-stack", "value": "760px", "purpose": "Dashboard cards stack." },
+      { "name": "dashboard-compact", "value": "960px", "purpose": "Narrower Dashboard side column." },
+      { "name": "hide-wordmark", "value": "980px", "purpose": "Header drops wordmark text and OS label." },
+      { "name": "hide-disk", "value": "1080px", "purpose": "Header drops Disk reading." },
+      { "name": "hide-uptime", "value": "1240px", "purpose": "Header drops Uptime reading." },
+      { "name": "tiny", "value": "360px", "purpose": "Header drops the extra trailing mobile action." }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Emerald action such as Sign in or Save settings.",
+      "html": "<button class=\"ds-btn-primary\">Save settings</button>",
+      "css": ".ds-btn-primary { height: 32px; padding: 0 10px; border: 1px solid transparent; border-radius: 12px; background: var(--color-accent, oklch(73% 0.16 160)); color: var(--color-accent-ink, #03150d); font: 500 14px/1.5 \"Geist Variable\", ui-sans-serif, system-ui, sans-serif; cursor: pointer; transition: background-color 120ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-btn-primary:hover { background: color-mix(in oklch, var(--color-accent, oklch(73% 0.16 160)) 80%, transparent); } .ds-btn-primary:focus-visible { outline: 2px solid var(--color-accent, oklch(73% 0.16 160)); outline-offset: 3px; } .ds-btn-primary:active { transform: translateY(1px); }"
+    },
+    {
+      "name": "Outline Button",
+      "kind": "button",
+      "refersTo": "button-outline",
+      "description": "Secondary action such as New conversation or the model chip.",
+      "html": "<button class=\"ds-btn-outline\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M12 5v14M5 12h14\"/></svg>New conversation</button>",
+      "css": ".ds-btn-outline { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px; border: 1px solid var(--color-rule, #262626); border-radius: 12px; background: var(--color-paper, #0a0a0a); color: var(--color-ink, #fafafa); font: 500 14px/1.5 \"Geist Variable\", ui-sans-serif, system-ui, sans-serif; cursor: pointer; transition: background-color 120ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-btn-outline:hover { background: var(--color-surface-raised, #1b1b1b); } .ds-btn-outline:focus-visible { outline: 2px solid var(--color-accent, oklch(73% 0.16 160)); outline-offset: 3px; }"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Quiet control with no resting fill, such as Sign out or history rows.",
+      "html": "<button class=\"ds-btn-ghost\">Sign out</button>",
+      "css": ".ds-btn-ghost { height: 32px; padding: 0 10px; border: 1px solid transparent; border-radius: 12px; background: transparent; color: var(--color-ink, #fafafa); font: 500 14px/1.5 \"Geist Variable\", ui-sans-serif, system-ui, sans-serif; cursor: pointer; } .ds-btn-ghost:hover { background: var(--color-surface-raised, #1b1b1b); } .ds-btn-ghost:focus-visible { outline: 2px solid var(--color-accent, oklch(73% 0.16 160)); outline-offset: 3px; }"
+    },
+    {
+      "name": "Password Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Login field on the dark ground with an emerald caret.",
+      "html": "<label class=\"ds-field\"><span>Password</span><input class=\"ds-input\" type=\"password\"></label>",
+      "css": ".ds-field { display: flex; flex-direction: column; gap: 8px; color: var(--color-ink, #fafafa); font: 500 14px/1.5 \"Geist Variable\", ui-sans-serif, system-ui, sans-serif; } .ds-input { height: 44px; padding: 4px 10px; border: 1px solid var(--color-rule-strong, #444444); border-radius: 12px; background: var(--color-paper, #0a0a0a); color: var(--color-ink, #fafafa); caret-color: var(--color-accent, oklch(73% 0.16 160)); font: 400 14px/1.5 \"Geist Variable\", ui-sans-serif, system-ui, sans-serif; } .ds-input:focus-visible { outline: 2px solid var(--color-accent, oklch(73% 0.16 160)); outline-offset: 2px; }"
+    },
+    {
+      "name": "Workspace Navigation",
+      "kind": "nav",
+      "refersTo": "navigation",
+      "description": "Header segmented selector. Controls stays disabled with a Soon badge.",
+      "html": "<nav class=\"ds-nav\" aria-label=\"Workspace\"><a href=\"#\" aria-current=\"page\">Assistant</a><a href=\"#\">Dashboard</a><button disabled>Controls <span class=\"ds-badge\">Soon</span></button></nav>",
+      "css": ".ds-nav { display: inline-flex; gap: 2px; padding: 3px; border: 1px solid var(--rule-soft, #1c1c1c); border-radius: 10px; background: var(--color-surface, #111111); font: 500 13px/1.5 \"Geist Variable\", ui-sans-serif, system-ui, sans-serif; } .ds-nav a, .ds-nav button { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 12px; border: 0; border-radius: 7px; background: transparent; color: var(--color-ink-muted, #a1a1a1); font: inherit; text-decoration: none; } .ds-nav a:hover { background: var(--color-surface-raised, #1b1b1b); color: var(--color-ink, #fafafa); } .ds-nav a[aria-current=\"page\"] { background: #202020; color: var(--color-ink, #fafafa); box-shadow: inset 0 0 0 1px var(--color-rule, #262626), 0 1px 2px rgb(0 0 0 / 0.4); } .ds-nav button { cursor: not-allowed; } .ds-nav a:focus-visible { outline: 2px solid var(--color-accent, oklch(73% 0.16 160)); outline-offset: 2px; } .ds-badge { padding: 0 6px; border: 1px solid var(--color-rule, #262626); border-radius: 999px; font-size: 10px; }"
+    },
+    {
+      "name": "Server Reading",
+      "kind": "custom",
+      "description": "Compact header readout; stale readings switch to amber and say so.",
+      "html": "<div class=\"ds-reading\"><span class=\"ds-reading-label\">RAM</span><span class=\"ds-reading-value\">56.0% <span class=\"ds-meter\"><i style=\"width:56%\"></i></span></span></div><div class=\"ds-reading ds-stale\"><span class=\"ds-reading-label\">Disk / · stale</span><span class=\"ds-reading-value\">25.8% <span class=\"ds-meter\"><i style=\"width:26%\"></i></span></span></div>",
+      "css": ".ds-reading { display: inline-flex; flex-direction: column; gap: 3px; padding: 0 12px; font-family: \"Geist Variable\", ui-sans-serif, system-ui, sans-serif; } .ds-reading + .ds-reading { border-left: 1px solid var(--rule-soft, #1c1c1c); } .ds-reading-label { color: var(--color-ink-muted, #a1a1a1); font-size: 11px; line-height: 13px; } .ds-reading-value { display: inline-flex; align-items: center; gap: 7px; color: var(--color-ink, #fafafa); font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; } .ds-meter { width: 28px; height: 4px; border-radius: 99px; background: var(--color-rule, #262626); overflow: hidden; } .ds-meter i { display: block; height: 100%; background: var(--color-accent, oklch(73% 0.16 160)); } .ds-stale .ds-reading-value { color: var(--color-warning, #fbc56a); } .ds-stale .ds-meter i { background: var(--color-warning, #fbc56a); }"
+    },
+    {
+      "name": "Metric Card",
+      "kind": "card",
+      "refersTo": "metric-card",
+      "description": "Dashboard reading with Mono figure, capacity bar and observation footer.",
+      "html": "<section class=\"ds-card\"><h2>RAM</h2><p class=\"ds-card-label\">Used</p><p class=\"ds-card-figure\">4.2 GiB</p><div class=\"ds-bar\"><i style=\"width:56%\"></i></div><footer>Current reading</footer></section>",
+      "css": ".ds-card { width: 320px; padding: 20px 20px 0; border: 1px solid var(--color-rule, #262626); border-radius: 12px; background: var(--color-surface, #111111); color: var(--color-ink, #fafafa); box-shadow: 0 1px 2px rgb(0 0 0 / 35%), 0 8px 24px -14px rgb(0 0 0 / 50%); font-family: \"Geist Variable\", ui-sans-serif, system-ui, sans-serif; } .ds-card h2 { margin: 0 0 16px; font-size: 14px; font-weight: 600; } .ds-card-label { margin: 0; color: var(--color-ink-muted, #a1a1a1); font-size: 12px; } .ds-card-figure { margin: 4px 0 12px; font: 500 24px/1.25 \"Geist Mono Variable\", ui-monospace, monospace; letter-spacing: -0.025em; } .ds-bar { height: 6px; border-radius: 999px; background: var(--color-surface-raised, #1b1b1b); overflow: hidden; } .ds-bar i { display: block; height: 100%; background: var(--color-accent, oklch(73% 0.16 160)); } .ds-card footer { margin: 16px -20px 0; padding: 10px 20px; border-top: 1px solid var(--color-rule, #262626); color: var(--color-ink-muted, #a1a1a1); font-size: 11px; }"
+    },
+    {
+      "name": "Grouped Tool Disclosure",
+      "kind": "custom",
+      "refersTo": "tool-disclosure",
+      "description": "One summary for consecutive tool records; expands to technical detail.",
+      "html": "<details class=\"ds-tools\"><summary><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z\"/></svg>Checked your library · Read movie details <small>2 records</small></summary><pre>media_find {\"type\": \"movie\", \"query\": \"Dune\"}</pre></details>",
+      "css": ".ds-tools { max-width: 720px; color: var(--color-ink-muted, #a1a1a1); font: 400 13px/1.5 \"Geist Variable\", ui-sans-serif, system-ui, sans-serif; } .ds-tools summary { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 7px 10px; border: 1px solid var(--color-rule, #262626); border-radius: 16px; background: var(--color-paper, #0a0a0a); cursor: pointer; list-style: none; } .ds-tools summary::-webkit-details-marker { display: none; } .ds-tools summary:hover { background: var(--color-surface-raised, #1b1b1b); } .ds-tools summary svg { color: var(--color-accent, oklch(73% 0.16 160)); } .ds-tools summary:focus-visible { outline: 2px solid var(--color-accent, oklch(73% 0.16 160)); outline-offset: 2px; } .ds-tools small { font-size: 11px; } .ds-tools pre { margin: 8px 0 0; padding: 10px 12px; border: 1px solid var(--color-rule, #262626); border-radius: 12px; background: var(--color-surface, #111111); color: var(--color-ink, #fafafa); font: 400 12px/1.65 \"Geist Mono Variable\", ui-monospace, monospace; overflow-x: auto; }"
+    },
+    {
+      "name": "Assistant Composer",
+      "kind": "custom",
+      "refersTo": "composer",
+      "description": "Docked single-line composer with model chip and circular send.",
+      "html": "<form class=\"ds-composer\"><textarea rows=\"1\" placeholder=\"Message the Assistant...\" aria-label=\"Message the Assistant\"></textarea><div class=\"ds-composer-row\"><button type=\"button\" class=\"ds-chip\">gpt-5.5</button><button type=\"submit\" class=\"ds-send\" aria-label=\"Send message\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m5 12 7-7 7 7M12 19V5\"/></svg></button></div></form>",
+      "css": ".ds-composer { width: min(100%, 720px); padding: 12px 12px 10px 16px; border: 1px solid var(--color-rule, #262626); border-radius: 16px; background: var(--color-surface-raised, #1b1b1b); box-shadow: 0 2px 6px rgb(0 0 0 / 30%), 0 18px 40px -16px rgb(0 0 0 / 70%); transition: border-color 180ms ease-out; } .ds-composer:focus-within { border-color: var(--color-rule-strong, #444444); } .ds-composer textarea { display: block; width: 100%; min-height: 32px; max-height: 180px; resize: none; border: 0; padding: 2px 0 8px; background: transparent; color: var(--color-ink, #fafafa); caret-color: var(--color-accent, oklch(73% 0.16 160)); font: 400 15px/1.55 \"Geist Variable\", ui-sans-serif, system-ui, sans-serif; outline: none; } .ds-composer-row { display: flex; align-items: center; justify-content: space-between; } .ds-chip { height: 32px; padding: 0 10px; border: 0; border-radius: 999px; background: transparent; color: var(--color-ink-muted, #a1a1a1); font: 500 12px/1.5 \"Geist Variable\", ui-sans-serif, system-ui, sans-serif; cursor: pointer; } .ds-chip:hover { background: var(--color-paper, #0a0a0a); } .ds-send { display: grid; place-items: center; width: 32px; height: 32px; border: 0; border-radius: 999px; background: var(--color-accent, oklch(73% 0.16 160)); color: var(--color-accent-ink, #03150d); cursor: pointer; } .ds-chip:focus-visible, .ds-send:focus-visible { outline: 2px solid var(--color-accent, oklch(73% 0.16 160)); outline-offset: 2px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "Readings in the header, answers in the center",
+    "overview": "Voidstation uses a near-black app shell, compact Server readouts, and familiar workspace controls. The confirmed direction is archived at `prototype/voidstation-redesign:prototypes/redesign-worlds/hybrid.html`, with Linear and Vercel dashboard craft and ChatGPT/Claude conversation conventions. Keep the reading area quieter than the header and controls. No cinematic treatment or catalog motif.\n\nThe Assistant puts saved conversations in a sidebar and answers in a centered column. The Dashboard uses the same shell without the sidebar. On phones, history becomes a modal drawer and workspace navigation moves below the composer. These are implemented layouts, not a new brand metaphor.",
+    "keyCharacteristics": [
+      "Dark only, with charcoal panels and thin rules.",
+      "Existing emerald for actions, live readings, links, and focus.",
+      "Original Sora logo; Geist reading text and Geist Mono measurements.",
+      "Grouped tool evidence, soft corners, and limited offset shadows."
+    ],
+    "rules": [],
+    "dos": [
+      "Do retain the exact emerald, original logo, self-hosted fonts, and dark-only palette.",
+      "Do keep Assistant reading at 15px/1.7, bounded by 72ch, with evidence available on demand.",
+      "Do use the existing slot components, protected overlay focus, 44px touch targets, and reduced-motion rules.",
+      "Do pair reading-state colors with words or icons and retain observation details."
+    ],
+    "donts": [
+      "Don't add Sora headings, uppercase eyebrows, decorative imagery, or colored glow.",
+      "Don't restore the three-column boxed Assistant workbench or add a sidebar to the Dashboard.",
+      "Don't style Controls/Soon as available or describe read-only tool activity as a mutation or approval.",
+      "Don't remove focus, selection, caret, scrollbar, IME, or keyboard-resize behavior when reusing the layouts."
+    ]
+  }
+}

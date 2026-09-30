@@ -6,4 +6,5 @@ node_modules/
 !.env.example
 artifacts/
 .vitest/
+.impeccable/review/
 certificates/

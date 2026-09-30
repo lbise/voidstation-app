@@ -2,15 +2,13 @@
 
 import {
   ArrowDown,
-  Bot,
+  ArrowUp,
   ChevronRight,
   CircleAlert,
   CircleDashed,
-  LayoutDashboard,
+  Menu,
   MessageSquarePlus,
   Radio,
-  SendHorizontal,
-  Server,
   Settings,
   Trash2,
   WifiOff,
@@ -20,7 +18,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { LogoutButton } from "@/components/logout-button";
+import { AppShell } from "@/components/app-shell";
+import { activityHasError, activitySummary, conversationEntries, groupThreadEntries, type ThreadGroup } from "@/components/assistant-thread";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -246,77 +245,60 @@ function MediaResultCard({ entry }: { entry: SavedMediaResult }) {
         <strong>{mediaResultLabel(result)}</strong>
         <Badge variant={result.kind === "error" ? "destructive" : "secondary"}>{result.kind === "error" ? "Unavailable" : "Tool result"}</Badge>
       </div>
-      {result.kind === "error" ? <p>{result.message}</p> : <pre>{JSON.stringify(result, null, 2)}</pre>}
+      {result.kind === "error" && <p>{result.message}</p>}
+      <pre>{JSON.stringify(result, null, 2)}</pre>
     </article>
   );
 }
 
-function ToolCallCard({ toolCall }: { toolCall: ToolCallRecord }) {
+function ToolActivity({ group }: { group: Extract<ThreadGroup, { type: "activity" }> }) {
+  const errorCount = group.entries.filter(activityHasError).length;
   return (
     <Collapsible className="assistant-tool-activity">
-      <CollapsibleTrigger render={<Button type="button" variant="outline" className="assistant-tool-call" />}>
+      <CollapsibleTrigger render={<Button type="button" variant="outline" className="assistant-tool-summary" />}>
         <Wrench data-icon="inline-start" aria-hidden="true" />
-        <span>{toolCall.name}</span>
-        <Badge variant={toolCall.status === "error" ? "destructive" : "secondary"}>{toolCall.status === "error" ? "Failed" : "Complete"}</Badge>
+        <span className="assistant-tool-summary__label">{activitySummary(group.entries)}</span>
+        <span className="assistant-tool-count">{group.entries.length} record{group.entries.length === 1 ? "" : "s"}</span>
+        {errorCount > 0 && <Badge variant="destructive">{errorCount} failed</Badge>}
         <ChevronRight data-icon="inline-end" className="assistant-tool-chevron" aria-hidden="true" />
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <div className="assistant-tool-call-detail">
-          <strong>Parameters</strong>
-          <pre>{JSON.stringify(toolCall.parameters, null, 2)}</pre>
-          <strong>Result</strong>
-          <pre>{JSON.stringify(toolCall.result, null, 2)}</pre>
+        <div className="assistant-tool-records">
+          {group.entries.map((entry) => entry.type === "mediaResult" ? (
+            <MediaResultCard key={`mediaResult-${entry.value.id}`} entry={entry.value} />
+          ) : (
+            <article className="assistant-tool-call-detail" key={`toolCall-${entry.value.id}`}>
+              <div className="assistant-tool-call-detail__head">
+                <code>{entry.value.name}</code>
+                <Badge variant={activityHasError(entry) ? "destructive" : "secondary"}>{activityHasError(entry) ? "Failed" : "Complete"}</Badge>
+              </div>
+              <strong>Parameters</strong>
+              <pre>{JSON.stringify(entry.value.parameters, null, 2)}</pre>
+              <strong>Result</strong>
+              <pre>{JSON.stringify(entry.value.result, null, 2)}</pre>
+            </article>
+          ))}
         </div>
       </CollapsibleContent>
     </Collapsible>
   );
 }
 
-type ThreadEntry =
-  | { type: "message"; value: AssistantMessage }
-  | { type: "toolCall"; value: ToolCallRecord }
-  | { type: "mediaResult"; value: SavedMediaResult };
-
-function conversationEntries(conversation: ConversationDetail): ThreadEntry[] {
-  const entries: ThreadEntry[] = [
-    ...conversation.messages.map((value): ThreadEntry => ({ type: "message", value })),
-    ...conversation.toolCalls.map((value): ThreadEntry => ({ type: "toolCall", value })),
-    ...conversation.mediaResults.map((value): ThreadEntry => ({ type: "mediaResult", value })),
-  ];
-  if (!conversation.timeline) return entries;
-  const remaining = new Map(entries.map((entry) => [`${entry.type}-${entry.value.id}`, entry]));
-  const ordered: ThreadEntry[] = [];
-  for (const reference of conversation.timeline) {
-    const key = `${reference.type}-${reference.id}`;
-    const entry = remaining.get(key);
-    if (entry) {
-      ordered.push(entry);
-      remaining.delete(key);
-    }
-  }
-  return [...ordered, ...remaining.values()];
+function AssistantMark() {
+  return <span className="assistant-avatar" aria-hidden="true">V<span>/</span></span>;
 }
 
-function ConversationEntry({ entry }: { entry: ThreadEntry }) {
-  if (entry.type === "toolCall") return <ToolCallCard toolCall={entry.value} />;
-  if (entry.type === "mediaResult") return (
-    <Collapsible>
-      <CollapsibleTrigger render={<Button type="button" variant="outline" />}>
-        {mediaResultLabel(entry.value.result)}
-        <ChevronRight data-icon="inline-end" className="assistant-tool-chevron" aria-hidden="true" />
-      </CollapsibleTrigger>
-      <CollapsibleContent><MediaResultCard entry={entry.value} /></CollapsibleContent>
-    </Collapsible>
-  );
+function ConversationEntry({ entry }: { entry: ThreadGroup }) {
+  if (entry.type === "activity") return <ToolActivity group={entry} />;
   const message = entry.value;
   return (
     <Message align={message.role === "user" ? "end" : "start"}>
       <MessageContent>
         <MessageHeader>
-          {message.role === "user" ? "You" : "Assistant"}
+          {message.role === "user" ? <span className="visually-hidden">You</span> : <><AssistantMark /><span>Assistant</span></>}
           {message.role === "assistant" && message.provider && message.model && <small className="assistant-message-model">{message.provider === "openrouter" ? "OpenRouter" : "OpenAI Codex"} · {message.model}</small>}
         </MessageHeader>
-        <Bubble align={message.role === "user" ? "end" : "start"} variant={message.role === "user" ? "secondary" : "outline"}>
+        <Bubble align={message.role === "user" ? "end" : "start"} variant={message.role === "user" ? "secondary" : "ghost"}>
           <BubbleContent className={message.role === "assistant" ? "assistant-markdown" : undefined}>
             {message.role === "assistant" ? <AssistantMarkdown text={message.text} /> : message.text}
           </BubbleContent>
@@ -349,6 +331,7 @@ export function Assistant() {
   const [settings, setSettings] = useState<AssistantSettings | null>(null);
   const [settingsState, setSettingsState] = useState<"loading" | "ready" | "unavailable">("loading");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsProvider, setSettingsProvider] = useState<AssistantProviderId>("openai-codex");
   const [settingsModel, setSettingsModel] = useState("gpt-5.5");
   const [modelSearch, setModelSearch] = useState("");
@@ -356,8 +339,27 @@ export function Assistant() {
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
+  const historyTrigger = useRef<HTMLButtonElement>(null);
   const activeIdRef = useRef<string | null>(null);
   const conversationsRef = useRef<Conversation[]>([]);
+  const drafts = useRef(new Map<string, string>());
+
+  const updateText = (value: string) => {
+    if (activeIdRef.current) drafts.current.set(activeIdRef.current, value);
+    setText(value);
+  };
+
+  useEffect(() => {
+    const resize = () => {
+      const textarea = composer.current;
+      if (!textarea) return;
+      textarea.style.height = "auto";
+      textarea.style.height = `${Math.min(textarea.scrollHeight, 180)}px`;
+    };
+    resize();
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
+  }, [text, activeId, detail?.id]);
 
   const redirectIfUnauthorized = useCallback((status: number): boolean => {
     if (status !== 401) return false;
@@ -384,7 +386,8 @@ export function Assistant() {
     setLiveError(false);
     setOptimisticMessage(null);
     setDetail(null);
-    setText("");
+    setText(drafts.current.get(id) ?? "");
+    setHistoryOpen(false);
     setActiveId(id);
     setUrlConversation(id);
   }, [setUrlConversation]);
@@ -567,6 +570,7 @@ export function Assistant() {
     if (!message || !conversation || conversation.turn?.status === "running" || sendingIds.has(conversation.id)) return;
 
     const conversationId = conversation.id;
+    drafts.current.delete(conversationId);
     setActionError(null);
     setSendingIds((previous) => new Set(previous).add(conversationId));
     setOptimisticMessage({ id: `pending-${crypto.randomUUID()}`, role: "user", text: message, pending: true });
@@ -581,6 +585,7 @@ export function Assistant() {
       next.delete(conversationId);
       return next;
     });
+    if (!result.ok) drafts.current.set(conversationId, message);
     if (activeIdRef.current !== conversationId) return;
     if (!result.ok) {
       setText(message);
@@ -613,6 +618,7 @@ export function Assistant() {
         return;
       }
       if (response.status !== 204) throw new Error(await responseError(response));
+      drafts.current.delete(conversation.id);
       const remaining = conversationsRef.current.filter(({ id }) => id !== conversation.id);
       commitConversations(remaining);
       if (wasActive && activeIdRef.current === conversation.id) {
@@ -670,105 +676,128 @@ export function Assistant() {
   const activeConversation = detail?.id === activeId ? detail : null;
   const entries = activeConversation ? conversationEntries(activeConversation) : [];
   if (activeConversation && optimisticMessage) entries.push({ type: "message", value: optimisticMessage });
+  const groupedEntries = groupThreadEntries(entries);
+  const savedProvider = settings?.providers.find((provider) => provider.id === settings?.provider);
+  const savedModel = savedProvider?.models.find((model) => model.id === settings?.model);
+  const modelLabel = settings ? `${savedProvider?.name ?? settings.provider} · ${savedModel?.name ?? settings.model}` : "Provider and model";
+  const openSettings = (open: boolean) => {
+    if (open && settings) {
+      setSettingsProvider(settings.provider);
+      setSettingsModel(settings.model);
+      setModelSearch("");
+      setModelFilter("all");
+      setSettingsError(null);
+    }
+    setSettingsOpen(open);
+  };
   const isSending = activeId ? sendingIds.has(activeId) : false;
   const isRunning = activeConversation?.turn?.status === "running" || isSending;
   const composerDisabled = !activeConversation || isRunning;
 
+  const sortedConversations = [...conversations].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  const today = new Date().toDateString();
+  const historyGroups = [
+    { label: "Today", items: sortedConversations.filter((conversation) => new Date(conversation.updatedAt).toDateString() === today) },
+    { label: "Earlier", items: sortedConversations.filter((conversation) => new Date(conversation.updatedAt).toDateString() !== today) },
+  ];
+  const history = () => (
+    <>
+      <Button className="assistant-new-conversation" type="button" variant="outline" onClick={createConversation} disabled={isCreating}>
+        <MessageSquarePlus data-icon="inline-start" aria-hidden="true" />
+        {isCreating ? "Creating..." : "New conversation"}
+      </Button>
+      {listState === "unavailable" && (
+        <Alert variant="destructive">
+          <CircleAlert aria-hidden="true" />
+          <AlertDescription>History is unavailable. Saved conversations already on screen remain available.</AlertDescription>
+          <Button type="button" variant="ghost" size="sm" onClick={() => void refreshConversations()}>Retry</Button>
+        </Alert>
+      )}
+      <div className="assistant-conversation-items" aria-busy={listState === "loading"}>
+        {listState === "loading" && <p className="assistant-list-status" role="status">Loading history...</p>}
+        {listState === "ready" && conversations.length === 0 && <p className="assistant-list-status">No saved conversations.</p>}
+        {historyGroups.map((group) => group.items.length > 0 && (
+          <section className="assistant-history-group" key={group.label} aria-label={group.label}>
+            <h2>{group.label}</h2>
+            <ul>
+              {group.items.map((conversation) => {
+                const isActive = conversation.id === activeId;
+                return (
+                  <li className="assistant-conversation-item" key={conversation.id} data-active={isActive}>
+                    <Button
+                      className="assistant-conversation-select"
+                      type="button"
+                      variant="ghost"
+                      aria-current={isActive ? "page" : undefined}
+                      title={conversation.title || "Untitled conversation"}
+                      onClick={() => selectConversation(conversation.id)}
+                    >
+                      <span className="truncate">{conversation.title || "Untitled conversation"}</span>
+                      <time dateTime={conversation.updatedAt} title={formatDate(conversation.updatedAt)}>
+                        {new Date(conversation.updatedAt).toDateString() === today
+                          ? new Date(conversation.updatedAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+                          : new Date(conversation.updatedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                      </time>
+                    </Button>
+                    <Button
+                      className="assistant-delete"
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={`Delete ${conversation.title || "conversation"}`}
+                      title={conversation.turn?.status === "running" ? "Cannot delete a conversation while it is working" : "Delete conversation"}
+                      disabled={conversation.turn?.status === "running" || deletingId === conversation.id}
+                      onClick={() => setConversationPendingDeletion(conversation)}
+                    >
+                      <Trash2 data-icon="inline-start" aria-hidden="true" />
+                    </Button>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        ))}
+      </div>
+    </>
+  );
+
   return (
-    <div className="assistant-workbench">
-      <aside className="dashboard-rail">
-        <div className="dashboard-wordmark">
-          <span className="dashboard-mark" aria-hidden="true">V<span>/</span></span>
-          voidstation<span className="dashboard-wordmark-dot" aria-hidden="true">.</span>
-        </div>
-        <div className="dashboard-server">
-          <Server aria-hidden="true" />
-          <span>Home Server<small>Ubuntu</small></span>
-        </div>
-        <nav className="dashboard-navigation" aria-label="Workspace">
-          <a href="/"><LayoutDashboard aria-hidden="true" />Dashboard</a>
-          <a href="/assistant" aria-current="page"><Bot aria-hidden="true" />Assistant</a>
-        </nav>
-        <LogoutButton />
-      </aside>
-
-      <section className="assistant-conversation-list" aria-labelledby="conversation-list-title">
-        <div className="assistant-conversation-list__head">
-          <div>
-            <p className="assistant-eyebrow">History</p>
-            <h2 id="conversation-list-title">Conversations</h2>
-          </div>
-          <Button type="button" size="icon" onClick={createConversation} disabled={isCreating} aria-label="New conversation">
-            <MessageSquarePlus data-icon="inline-start" aria-hidden="true" />
-          </Button>
-        </div>
-        {listState === "unavailable" && (
-          <Alert variant="destructive">
-            <CircleAlert aria-hidden="true" />
-            <AlertDescription>History is unavailable. Saved conversations already on screen remain available.</AlertDescription>
-          </Alert>
-        )}
-        <div className="assistant-conversation-items" aria-busy={listState === "loading"}>
-          {listState === "loading" && <p className="assistant-list-status">Loading history...</p>}
-          {listState !== "loading" && conversations.length === 0 && (
-            <p className="assistant-list-status">No saved conversations.</p>
-          )}
-          {conversations.map((conversation) => {
-            const isActive = conversation.id === activeId;
-            const canDelete = conversation.turn?.status !== "running";
-            return (
-              <div className="assistant-conversation-item" key={conversation.id} data-active={isActive}>
-                <Button
-                  className="assistant-conversation-select"
-                  type="button"
-                  variant="ghost"
-                  aria-current={isActive ? "page" : undefined}
-                  onClick={() => selectConversation(conversation.id)}
-                >
-                  <span>{conversation.title || "Untitled conversation"}</span>
-                  <small>{formatDate(conversation.updatedAt)}</small>
-                </Button>
-                <Button
-                  className="assistant-delete"
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label={`Delete ${conversation.title || "conversation"}`}
-                  title={conversation.turn?.status === "running" ? "Cannot delete a conversation while it is working" : "Delete conversation"}
-                  disabled={!canDelete || deletingId === conversation.id}
-                  onClick={() => setConversationPendingDeletion(conversation)}
-                >
-                  <Trash2 data-icon="inline-start" aria-hidden="true" />
-                </Button>
-              </div>
-            );
-          })}
-        </div>
-      </section>
-
-      <main className="assistant-main">
-        <header className="assistant-page-head">
-          <div>
-            <p className="assistant-eyebrow">Assistant</p>
-            <h1>{activeConversation?.title || "Assistant"}</h1>
-            {settingsState === "ready" && selectedProvider && selectedModelOption && (
-              <p className="assistant-selection" aria-label="Selected provider and model">{selectedProvider.name} · {selectedModelOption.name}</p>
-            )}
-          </div>
-          <div className="assistant-page-head__actions">
-            {activeConversation?.turn && <Badge variant={turnPresentation[activeConversation.turn.status].variant}>{turnPresentation[activeConversation.turn.status].label}</Badge>}
-            <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-              <DialogTrigger render={<Button type="button" variant="outline" size="sm" />}>
-                <Settings data-icon="inline-start" aria-hidden="true" /> Settings
-              </DialogTrigger>
-              <DialogContent className="assistant-settings sm:max-w-xl">
+    <Dialog open={historyOpen} onOpenChange={setHistoryOpen}>
+      <Dialog open={settingsOpen} onOpenChange={openSettings}>
+        <AppShell
+          active="assistant"
+          mobileLeading={
+            <Button ref={historyTrigger} type="button" variant="ghost" size="icon" className="assistant-history-trigger" onClick={() => setHistoryOpen(true)} aria-label="Open conversations" aria-haspopup="dialog" aria-expanded={historyOpen}>
+              <Menu data-icon="inline-start" aria-hidden="true" />
+            </Button>
+          }
+          mobileTrailing={
+            <Button type="button" variant="ghost" size="icon" className="assistant-mobile-new" onClick={createConversation} disabled={isCreating} aria-label="New chat">
+              <MessageSquarePlus data-icon="inline-start" aria-hidden="true" />
+            </Button>
+          }
+        >
+          <div className="assistant-workbench">
+            <aside className="assistant-conversation-list" aria-label="Conversations">{history()}</aside>
+            <main className="assistant-main">
+              <header className="assistant-page-head">
+                <h1 className="truncate">{activeConversation?.title || "Assistant"}</h1>
+                <div className="assistant-page-head__actions">
+                  {activeConversation?.turn && activeConversation.turn.status !== "complete" && <Badge variant={turnPresentation[activeConversation.turn.status].variant}>{turnPresentation[activeConversation.turn.status].label}</Badge>}
+                  <DialogTrigger render={<Button type="button" variant="outline" size="sm" className="assistant-model-chip" />}>
+                    <Settings data-icon="inline-start" aria-hidden="true" />
+                    <span className="truncate">{modelLabel}</span>
+                  </DialogTrigger>
+                </div>
+              </header>
+              <DialogContent className="assistant-settings">
                 <DialogHeader className="pr-6">
                   <DialogTitle>Provider and model</DialogTitle>
                   <DialogDescription>Changes apply to your next message. A reply already running keeps its current model.</DialogDescription>
                 </DialogHeader>
                 <div className="assistant-settings__body">
             {settingsState === "loading" && <p role="status">Loading provider options...</p>}
-            {settingsState === "unavailable" && <Alert variant="destructive"><CircleAlert aria-hidden="true" /><AlertTitle>Provider settings unavailable</AlertTitle><AlertDescription>{settingsError || "The Assistant worker could not return provider settings. Check that it is running the current build."}</AlertDescription></Alert>}
+            {settingsState === "unavailable" && <Alert variant="destructive"><CircleAlert aria-hidden="true" /><AlertTitle>Provider settings unavailable</AlertTitle><AlertDescription>{settingsError || "The Assistant worker could not return provider settings. Check that it is running the current build."}</AlertDescription><Button type="button" variant="outline" onClick={() => void loadSettings()}>Retry</Button></Alert>}
             {settingsState === "ready" && settings && (
               <form id="assistant-settings-form" className="assistant-settings__form" onSubmit={saveSettings}>
                 <FieldGroup>
@@ -811,9 +840,6 @@ export function Assistant() {
                   <Button type="submit" form="assistant-settings-form" disabled={settingsState !== "ready" || settingsSaving || !settingsModel || !selectedModelAvailable}>{settingsSaving ? "Saving..." : "Save settings"}</Button>
                 </DialogFooter>
               </DialogContent>
-            </Dialog>
-          </div>
-        </header>
 
         <section className="assistant-thread" aria-label="Conversation">
           <div className="assistant-notices">
@@ -841,10 +867,10 @@ export function Assistant() {
           </div>
           {!activeId && listState !== "loading" && (
             <Empty className="assistant-empty">
-              <EmptyMedia variant="icon"><Bot aria-hidden="true" /></EmptyMedia>
+              <EmptyMedia><AssistantMark /></EmptyMedia>
               <EmptyHeader>
                 <EmptyTitle>Start a conversation</EmptyTitle>
-                <EmptyDescription>This Assistant can find and manage movies and series through Radarr and Sonarr.</EmptyDescription>
+                <EmptyDescription>Look up movies and series, check your managed library, and read Radarr and Sonarr status. This Assistant is read-only.</EmptyDescription>
               </EmptyHeader>
               <Button type="button" onClick={createConversation} disabled={isCreating}>
                 <MessageSquarePlus data-icon="inline-start" aria-hidden="true" />
@@ -852,18 +878,23 @@ export function Assistant() {
               </Button>
             </Empty>
           )}
-          {activeId && !activeConversation && !detailError && (
+          {((!activeId && listState === "loading") || (activeId && !activeConversation && !detailError)) && (
             <div className="assistant-loading" role="status" aria-live="polite">
               <CircleDashed aria-hidden="true" /> Loading conversation...
             </div>
           )}
           {activeConversation && entries.length === 0 && (
             <Empty className="assistant-empty">
-              <EmptyMedia variant="icon"><Bot aria-hidden="true" /></EmptyMedia>
+              <EmptyMedia><AssistantMark /></EmptyMedia>
               <EmptyHeader>
-                <EmptyTitle>How can I help?</EmptyTitle>
-                <EmptyDescription>This Assistant can find and manage movies and series through Radarr and Sonarr.</EmptyDescription>
+                <EmptyTitle>What's in your library?</EmptyTitle>
+                <EmptyDescription>Look up movies and series, check your managed library, and read Radarr and Sonarr status. This Assistant is read-only.</EmptyDescription>
               </EmptyHeader>
+              <div className="assistant-example-prompts" aria-label="Example prompts">
+                {["Is Dune in my library?", "Check the status of Severance"].map((prompt) => (
+                  <Button key={prompt} type="button" variant="outline" disabled={composerDisabled} onClick={() => { updateText(prompt); composer.current?.focus(); }}>{prompt}</Button>
+                ))}
+              </div>
             </Empty>
           )}
           {activeConversation && entries.length > 0 && (
@@ -871,11 +902,14 @@ export function Assistant() {
               <MessageScroller className="assistant-message-scroller">
                 <MessageScrollerViewport aria-label="Conversation messages">
                   <MessageScrollerContent className="assistant-messages" role="log" aria-live="polite" aria-relevant="additions text">
-                    {entries.map((entry) => (
-                      <MessageScrollerItem key={`${entry.type}-${entry.value.id}`} messageId={`${entry.type}-${entry.value.id}`} scrollAnchor={entry.type === "message" && entry.value.role === "user"}>
-                        <ConversationEntry entry={entry} />
-                      </MessageScrollerItem>
-                    ))}
+                    {groupedEntries.map((entry) => {
+                      const id = entry.type === "activity" ? entry.id : `message-${entry.value.id}`;
+                      return (
+                        <MessageScrollerItem key={id} messageId={id}>
+                          <ConversationEntry entry={entry} />
+                        </MessageScrollerItem>
+                      );
+                    })}
                     {isRunning && (
                       <MessageScrollerItem messageId={`working-${activeConversation.turn?.id ?? "pending"}`}>
                         <div className="assistant-working" role="status">
@@ -908,6 +942,7 @@ export function Assistant() {
           )}
         </section>
 
+        <div className="assistant-composer-wrap">
         <form className="assistant-composer" onSubmit={sendTurn}>
           <FieldGroup>
             <Field data-disabled={composerDisabled || undefined}>
@@ -916,27 +951,43 @@ export function Assistant() {
                 ref={composer}
                 id="assistant-message"
                 value={text}
-                onChange={(event) => setText(event.target.value)}
+                onChange={(event) => updateText(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return;
+                  if (window.matchMedia("(max-width: 859px) and (pointer: coarse)").matches) return;
                   event.preventDefault();
                   if (!event.repeat && !composerDisabled && text.trim()) event.currentTarget.form?.requestSubmit();
                 }}
                 placeholder={activeConversation ? "Message the Assistant..." : "Select or create a conversation to send a message"}
                 disabled={composerDisabled}
                 maxLength={8000}
-                rows={3}
+                rows={1}
               />
             </Field>
           </FieldGroup>
           <div className="assistant-composer__actions">
-            <Button type="submit" disabled={composerDisabled || !text.trim()}>
-              <SendHorizontal data-icon="inline-start" aria-hidden="true" />
-              Send
+            <DialogTrigger render={<Button type="button" variant="ghost" size="sm" className="assistant-composer-model" />} aria-label={`Provider and model settings: ${modelLabel}`}>
+              <Settings data-icon="inline-start" aria-hidden="true" />
+              <span className="truncate">{settings?.model ?? "Model settings"}</span>
+            </DialogTrigger>
+            <span className="assistant-composer-hint">Enter to send · Shift+Enter for a new line</span>
+            <Button type="submit" size="icon" className="assistant-send" aria-label="Send message" disabled={composerDisabled || !text.trim()}>
+              <ArrowUp data-icon="inline-start" aria-hidden="true" />
             </Button>
           </div>
         </form>
+        </div>
       </main>
+      </div>
+      </AppShell>
+      </Dialog>
+      <DialogContent className="assistant-history-drawer" finalFocus={historyTrigger}>
+        <DialogHeader>
+          <DialogTitle>Conversations</DialogTitle>
+          <DialogDescription className="visually-hidden">Resume or create a saved conversation.</DialogDescription>
+        </DialogHeader>
+        {history()}
+      </DialogContent>
       <AlertDialog
         open={Boolean(conversationPendingDeletion)}
         onOpenChange={(open) => {
@@ -966,6 +1017,6 @@ export function Assistant() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </Dialog>
   );
 }

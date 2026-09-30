@@ -1,23 +1,22 @@
 :root {
-  /* Workbench · blue-black surfaces with Emerald accent */
-  --color-paper: oklch(17% 0.019 255);
-  --color-surface: oklch(21% 0.019 255);
-  --color-surface-raised: oklch(25% 0.021 255);
-  --color-rule: oklch(33% 0.012 255);
-  --color-rule-strong: oklch(59% 0.014 185);
-  --color-ink: oklch(94% 0.006 255);
-  --color-ink-muted: oklch(74% 0.008 255);
+  --color-paper: #0a0a0a;
+  --color-surface: #111111;
+  --color-surface-raised: #1b1b1b;
+  --color-rule: #262626;
+  --color-rule-strong: #444444;
+  --color-ink: #fafafa;
+  --color-ink-muted: #a1a1a1;
   --color-accent: oklch(73% 0.16 160);
-  --color-accent-ink: oklch(16% 0.016 185);
-  --color-focus: oklch(91% 0.045 180);
-  --color-warning: oklch(83% 0.12 85);
-  --color-destructive: oklch(78% 0.12 25);
+  --color-accent-ink: #03150d;
+  --color-focus: var(--color-accent);
+  --color-warning: #fbc56a;
+  --color-destructive: #f87171;
 
   --font-sora: "Sora Variable", sans-serif;
-  --font-manrope: "Manrope Variable", sans-serif;
-  --font-display: var(--font-sora);
-  --font-body: var(--font-manrope);
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --font-logo: var(--font-sora);
+  --font-display: "Geist Variable", sans-serif;
+  --font-body: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 
   --space-3xs: 0.125rem;
   --space-2xs: 0.25rem;
@@ -45,7 +44,7 @@
 
   --rule-width: 1px;
   --rule-heavy: 2px;
-  --radius-sm: 0px;
-  --radius-md: 0px;
-  --radius-lg: 0px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
 }
